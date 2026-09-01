@@ -11,14 +11,15 @@
 <br/>
 
 [![CI](https://github.com/Furkiozknn/local-notes-search-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Furkiozknn/local-notes-search-mcp/actions/workflows/ci.yml)
-[![Testler](https://img.shields.io/badge/testler-25%20ge%C3%A7ti-3fb950?logo=pytest&logoColor=white)](tests/)
+[![Testler](https://img.shields.io/badge/testler-37-3fb950?logo=pytest&logoColor=white)](tests/)
 [![Lisans: MIT](https://img.shields.io/badge/lisans-MIT-8957e5)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776ab?logo=python&logoColor=white)](.python-version)
 [![MCP](https://img.shields.io/badge/MCP-sunucu-000000?logo=anthropic&logoColor=white)](https://modelcontextprotocol.io)
 
-[![API anahtarı yok](https://img.shields.io/badge/API%20anahtar%C4%B1-gerekmiyor-3fb950)](#-neden-bu-mimari)
-[![Çevrimdışı](https://img.shields.io/badge/sorgular-%25100%20%C3%A7evrimd%C4%B1%C5%9F%C4%B1-3fb950)](#-neden-bu-mimari)
+[![API anahtarı yok](https://img.shields.io/badge/index%20%2B%20arama-API%20anahtar%C4%B1%20yok-3fb950)](#-neden-bu-mimari)
+[![Çevrimdışı](https://img.shields.io/badge/retrieval-%25100%20%C3%A7evrimd%C4%B1%C5%9F%C4%B1-3fb950)](#-neden-bu-mimari)
 [![Sunucu yok](https://img.shields.io/badge/altyap%C4%B1-s%C4%B1f%C4%B1r%20daemon-3fb950)](#-neden-bu-mimari)
+[![Opsiyonel LLM](https://img.shields.io/badge/opsiyonel-LLM%20soru%20cevap-4c8dff)](#-mcp-ara%C3%A7lar%C4%B1)
 [![Depolama](https://img.shields.io/badge/depolama-sqlite--vec-003b57?logo=sqlite&logoColor=white)](https://github.com/asg017/sqlite-vec)
 [![Embedding](https://img.shields.io/badge/embedding-fastembed%20ONNX-ff6b35)](https://github.com/qdrant/fastembed)
 
@@ -56,6 +57,12 @@ Bu akışın hiçbir adımı ağa çıkmadı. OpenAI anahtarı yok, Pinecone hes
 Docker konteyneri yok, kendi notlarınızda arama yapmak için önce
 `docker compose up` yazmanız gerekmiyor.
 
+Sonuç listesi yerine sentezlenmiş bir cevap mı istiyorsunuz? 💡 **`ask_notes`**
+tam olarak aynı retrieval'ı çalıştırır, ardından bir LLM'e *sadece bulunan
+parçalara dayanarak* cevap verdirir ve `dosya:satır` kaynaklarını ekler.
+Tamamen **opsiyoneldir** — `GROQ_API_KEY` ya da `MISTRAL_API_KEY` ayarlıysa
+sentezler; hiçbiri yoksa hata vermeden ham eşleşmeleri döner.
+
 ---
 
 ## 🧭 30 saniyelik özet
@@ -69,6 +76,7 @@ Docker konteyneri yok, kendi notlarınızda arama yapmak için önce
 | Doğrudan atlayabileceğiniz `dosya:satır` döner | ✅ | ⚠️ | ✅ |
 | Sorgu başına para harcar | ✅ ücretsiz | ❌ | ✅ ücretsiz |
 | Claude / herhangi bir MCP istemcisi doğrudan kullanabilir | ❌ | ⚠️ | ✅ |
+| Kaynaklı, temellendirilmiş LLM cevabı | ❌ | ✅ | ✅ opsiyonel |
 
 ---
 
@@ -95,6 +103,11 @@ flowchart LR
     QE --> DB
     DB --> R["🎯 En iyi k chunk<br/>dosya:satır + snippet<br/>+ mesafe skoru"]
 
+    R -. "opsiyonel: ask_notes<br/>API anahtarı gerekir" .-> LLM["🤖 LLM sentezi<br/>Groq → Mistral fallback<br/>sadece bulunan parçalara dayanır"]
+    LLM --> ANS["💡 Cevap + dosya:satır kaynakları"]
+
+    style LLM fill:#1c1730,stroke:#a371f7,color:#ffffff
+    style ANS fill:#1c1730,stroke:#a371f7,color:#ffffff
     style DB fill:#003b57,stroke:#00b4d8,color:#ffffff
     style R fill:#1a7f37,stroke:#3fb950,color:#ffffff
     style SKIP fill:#4d3800,stroke:#d4a72c,color:#ffffff
@@ -108,8 +121,14 @@ flowchart LR
 |---|---|
 | 🗂️ **`index_directory(path, extensions=None)`** | Bir dizini recursive indexler. `.git` / `node_modules` / `.venv` / `__pycache__` / `dist` / `build` ve 2 MB üzeri dosyalar atlanır. Değişmemiş dosyalar ucuz bir hash kontrolüyle atlanır; silinmiş dosyalar index'ten temizlenir. |
 | 🔍 **`search_notes(query, top_k=5, path_prefix=None)`** | Doğal dilde anlamsal arama. `dosya:satır-aralığı` + snippet + mesafe skoru döner — sadece bir dosya adı yığını değil. `path_prefix` aramayı tek bir alt ağaca daraltır. |
+| 💡 **`ask_notes(question, top_k=5, path_prefix=None)`** | *Opsiyonel.* `search_notes` ile aynı retrieval, ardından bir LLM (Groq → Mistral fallback) **sadece** o parçaları kullanarak cevap üretir ve altına `dosya:satır` kaynak listesi ekler. `GROQ_API_KEY` ya da `MISTRAL_API_KEY` gerekir. İkisi de yoksa — ya da sağlayıcı zinciri başarısız olursa — ham eşleşmeleri bir notla döner. Sentez mümkün olmadı diye asla sert bir hata vermez. |
 | 📋 **`list_indexed_files(path_prefix=None)`** | Şu an index'te ne var: yol, chunk sayısı, son indexlenme zamanı. Aramadan önce kapsamı görmek ya da bayat bir sonucu debug etmek için. |
 | 🧹 **`remove_directory(path)`** | `path` altındaki her şeyi index'ten düşürür. **Dosyalarınızı silmez** — sadece index'i temizler. |
+
+> 🔒 **`index_directory`, `search_notes`, `list_indexed_files` ve `remove_directory`
+> hiçbir API anahtarı istemez ve hiç ağa çıkmaz.** Uzak bir sağlayıcıyla
+> konuşabilen tek araç `ask_notes`, o da yalnızca siz açıkça bir anahtar
+> verdiğinizde.
 
 ---
 
@@ -156,6 +175,11 @@ tamamen çevrimdışı çalışır.
 | Ortam değişkeni | Varsayılan | Ne işe yarar |
 |---|---|---|
 | `LOCAL_NOTES_SEARCH_DB` | `~/.local-notes-search/index.db` | Index'in konumu. **Tüm indexlenen dizinler için TEK bir dosya** — böylece tek bir `search_notes` çağrısı bütün proje klasörlerinizi birden tarayabilir. |
+| `GROQ_API_KEY` | *ayarsız* | Opsiyonel. `ask_notes` sentezini Groq üzerinden açar (zincirdeki ilk sağlayıcı). |
+| `MISTRAL_API_KEY` | *ayarsız* | Opsiyonel. Groq ayarsızsa ya da başarısız olursa `ask_notes` için fallback sağlayıcı. |
+
+Anahtarlar yalnızca ortam değişkeninden okunur — **asla commit etmeyin ve git'e
+girecek bir MCP istemci config dosyasına yazmayın.**
 
 Varsayılan indexlenen uzantılar: `.md` `.txt` `.py` `.js` `.ts` `.tsx` `.jsx`
 `.json` `.yaml` `.yml` `.rst` `.toml` — çağrı başına `extensions=[...]` ile
@@ -183,17 +207,22 @@ değiştirilebilir.
 uv run pytest -v
 ```
 
-> **✅ Bu build ortamında 25 / 25 test gerçekten çalıştırılıp geçti** — hem saf
-> mantık testleri hem de gerçek uçtan uca model + index + arama akışı.
-> fastembed modeli gerçekten indirilip yüklendi, sqlite-vec eklentisi gerçekten
-> çalıştı ve *"pasta nasıl pişirilir"* araması gerçekten alakalı dosyayı bulup
-> alakasız dosyayı hariç tuttu.
+**37 test, bilinçli iki katmanlı bir strateji üzerine.** Saf mantık testleri
+(chunking, hash, dosya tarama, `ask_notes`'un sağlayıcı zinciri ve
+degradasyon yolları) her zaman çalışır — model yok, ağ yok, API anahtarı yok.
+Gerçek fastembed modelini veya sqlite-vec eklentisini gerektiren testler,
+bunlar yüklenemiyorsa (çevrimdışı runner, engellenmiş model indirmesi)
+**dürüstçe skip edilir** — sahte bir yeşil sonuç göstermek yerine.
 
-**İki katmanlı test stratejisi.** Saf mantık testleri (chunking, hash, dosya
-tarama) her zaman çalışır. Gerçek fastembed modelini veya sqlite-vec
-eklentisini gerektiren testler, bunlar ortamda yüklenemiyorsa (çevrimdışı bir
-runner, eksik bağımlılık) **dürüstçe skip edilir** — sahte bir yeşil sonuç
-göstermek yerine.
+Pratikte ne anlama geldiği, ölçüldüğü gibi:
+
+| Ortam | Sonuç |
+|---|---|
+| ✅ Orijinal build ortamı (model indirilebiliyor) | **25 / 25 geçti**, gerçek uçtan uca akış dahil — fastembed modeli gerçekten yüklendi, sqlite-vec eklentisi gerçekten çalıştı ve *"pasta nasıl pişirilir"* araması gerçekten alakalı dosyayı bulup alakasız dosyayı hariç tuttu. |
+| ⚠️ Model indirmesi engellenmiş bir sandbox | **24 geçti, 13 skip** — modele ihtiyaç duymayan her test yeşil; modele dayanan 13 test ise sahte bir geçiş yerine açık bir gerekçeyle skip edildi. |
+
+İkinci satır, birincinin dürüst bedeli: bu suite, bir şeyi *doğrulayamadığında*
+size bunu söylüyor.
 
 ---
 
@@ -222,8 +251,9 @@ bir README'dir.
 ## 📜 Lisans
 
 [MIT](LICENSE) — ve her çalışma zamanı bağımlılığı lisans açısından kontrol
-edildi: `sqlite-vec` (Apache-2.0), `fastembed` (Apache-2.0), `mcp` (MIT).
-Yığının hiçbir yerinde ticari kullanımı kısıtlayan bir model/ağırlık yok.
+edildi: `sqlite-vec` (Apache-2.0), `fastembed` (Apache-2.0), `mcp` (MIT),
+`litellm` (MIT). Yığının hiçbir yerinde ticari kullanımı kısıtlayan bir
+model/ağırlık yok.
 
 <div align="center">
 <br/>

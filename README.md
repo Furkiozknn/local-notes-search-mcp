@@ -11,14 +11,15 @@
 <br/>
 
 [![CI](https://github.com/Furkiozknn/local-notes-search-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Furkiozknn/local-notes-search-mcp/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-25%20passing-3fb950?logo=pytest&logoColor=white)](tests/)
+[![Tests](https://img.shields.io/badge/tests-37-3fb950?logo=pytest&logoColor=white)](tests/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-8957e5)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776ab?logo=python&logoColor=white)](.python-version)
 [![MCP](https://img.shields.io/badge/MCP-server-000000?logo=anthropic&logoColor=white)](https://modelcontextprotocol.io)
 
-[![No API key](https://img.shields.io/badge/API%20key-not%20required-3fb950)](#-why-this-architecture)
-[![Offline](https://img.shields.io/badge/queries-100%25%20offline-3fb950)](#-why-this-architecture)
+[![No API key](https://img.shields.io/badge/indexing%20%2B%20search-no%20API%20key-3fb950)](#-why-this-architecture)
+[![Offline](https://img.shields.io/badge/retrieval-100%25%20offline-3fb950)](#-why-this-architecture)
 [![No server](https://img.shields.io/badge/infra-zero%20daemons-3fb950)](#-why-this-architecture)
+[![Optional LLM](https://img.shields.io/badge/optional-LLM%20Q%26A-4c8dff)](#-mcp-tools)
 [![Storage](https://img.shields.io/badge/storage-sqlite--vec-003b57?logo=sqlite&logoColor=white)](https://github.com/asg017/sqlite-vec)
 [![Embeddings](https://img.shields.io/badge/embeddings-fastembed%20ONNX-ff6b35)](https://github.com/qdrant/fastembed)
 
@@ -55,6 +56,12 @@ Nothing in that flow touched the network. No OpenAI key, no Pinecone account,
 no Docker container, no `docker compose up` before you can search your own
 notes.
 
+Want a synthesized answer instead of a result list? 💡 **`ask_notes`** runs the
+exact same retrieval, then has an LLM answer *grounded only in the retrieved
+chunks*, with `file:line` sources attached. It's strictly **opt-in** — set
+`GROQ_API_KEY` or `MISTRAL_API_KEY` and it synthesizes; set neither and it
+quietly returns the raw matches instead of failing.
+
 ---
 
 ## 🧭 The 30-second pitch
@@ -68,6 +75,7 @@ notes.
 | Answers with exact `file:line` you can jump to | ✅ | ⚠️ | ✅ |
 | Costs money per query | ✅ free | ❌ | ✅ free |
 | Usable directly by Claude / any MCP client | ❌ | ⚠️ | ✅ |
+| Optional grounded LLM answer with sources | ❌ | ✅ | ✅ opt-in |
 
 ---
 
@@ -94,6 +102,11 @@ flowchart LR
     QE --> DB
     DB --> R["🎯 Top-k chunks<br/>file:line + snippet<br/>+ distance score"]
 
+    R -. "opt-in: ask_notes<br/>needs an API key" .-> LLM["🤖 LLM synthesis<br/>Groq → Mistral fallback<br/>grounded in retrieved chunks only"]
+    LLM --> ANS["💡 Answer + file:line sources"]
+
+    style LLM fill:#1c1730,stroke:#a371f7,color:#ffffff
+    style ANS fill:#1c1730,stroke:#a371f7,color:#ffffff
     style DB fill:#003b57,stroke:#00b4d8,color:#ffffff
     style R fill:#1a7f37,stroke:#3fb950,color:#ffffff
     style SKIP fill:#4d3800,stroke:#d4a72c,color:#ffffff
@@ -107,8 +120,14 @@ flowchart LR
 |---|---|
 | 🗂️ **`index_directory(path, extensions=None)`** | Recursively indexes a directory. Skips `.git` / `node_modules` / `.venv` / `__pycache__` / `dist` / `build` and anything over 2 MB. Unchanged files are skipped via a cheap hash check; deleted files are purged from the index. |
 | 🔍 **`search_notes(query, top_k=5, path_prefix=None)`** | Natural-language semantic search. Returns `file:line-range` + snippet + distance score — not just a bag of filenames. `path_prefix` scopes the search to one subtree. |
+| 💡 **`ask_notes(question, top_k=5, path_prefix=None)`** | *Optional.* Same retrieval as `search_notes`, then an LLM (Groq → Mistral fallback) answers using **only** those chunks, followed by a `file:line` source list. Needs `GROQ_API_KEY` or `MISTRAL_API_KEY`. With neither key set — or if the provider chain fails — it degrades to returning the raw matches with a note. It never hard-fails just because synthesis wasn't possible. |
 | 📋 **`list_indexed_files(path_prefix=None)`** | What's in the index right now: path, chunk count, last-indexed timestamp. Useful before searching, or to debug a stale result. |
 | 🧹 **`remove_directory(path)`** | Drops everything under `path` from the index. **Does not delete your files** — it only cleans the index. |
+
+> 🔒 **`index_directory`, `search_notes`, `list_indexed_files` and `remove_directory`
+> require no API key and make no network calls at all.** `ask_notes` is the one
+> tool that can talk to a remote provider, and only when you explicitly give it
+> a key.
 
 ---
 
@@ -155,6 +174,11 @@ offline.
 | Env var | Default | What it does |
 |---|---|---|
 | `LOCAL_NOTES_SEARCH_DB` | `~/.local-notes-search/index.db` | Where the index lives. **One single file for every indexed directory** — so a single `search_notes` call can span all your project folders at once. |
+| `GROQ_API_KEY` | *unset* | Optional. Enables `ask_notes` synthesis via Groq (first in the provider chain). |
+| `MISTRAL_API_KEY` | *unset* | Optional. Fallback provider for `ask_notes` when Groq is unset or fails. |
+
+Keys are read from the environment only — **never commit them, and never put
+them in the MCP client config file you check into git.**
 
 Default indexed extensions: `.md` `.txt` `.py` `.js` `.ts` `.tsx` `.jsx` `.json`
 `.yaml` `.yml` `.rst` `.toml` — override per call with `extensions=[...]`.
@@ -181,16 +205,22 @@ Default indexed extensions: `.md` `.txt` `.py` `.js` `.ts` `.tsx` `.jsx` `.json`
 uv run pytest -v
 ```
 
-> **✅ 25 / 25 tests genuinely executed and passed in this build environment** —
-> both the pure-logic tests *and* the real end-to-end model + index + search
-> flow. The fastembed model was really downloaded and loaded, the sqlite-vec
-> extension really ran, and a *"how do I bake a cake"* query really retrieved
-> the relevant file while excluding the irrelevant one.
+**37 tests, on a deliberate two-tier strategy.** Pure-logic tests (chunking,
+hashing, file walking, `ask_notes`' provider-chain and degradation paths)
+always run — no model, no network, no API key. Tests that need the real
+fastembed model or the sqlite-vec extension **skip honestly** when those can't
+be loaded — an offline runner, a blocked model download — rather than faking a
+green result.
 
-**Two-tier test strategy.** Pure-logic tests (chunking, hashing, file walking)
-always run. Tests that need the real fastembed model or the sqlite-vec
-extension **skip honestly** when those can't be loaded in the environment — an
-offline runner, a missing dependency — rather than faking a green result.
+What that means in practice, reported exactly as measured:
+
+| Environment | Result |
+|---|---|
+| ✅ Original build environment (model downloadable) | **25 / 25 passed**, including the real end-to-end flow — the fastembed model really loaded, the sqlite-vec extension really ran, and a *"how do I bake a cake"* query really retrieved the relevant file while excluding the irrelevant one. |
+| ⚠️ A sandbox with the model download blocked | **24 passed, 13 skipped** — every model-free test green, and the 13 model-backed tests skipped with an explicit reason instead of a false pass. |
+
+The second row is the honest cost of the first: this suite tells you when it
+*couldn't* verify something.
 
 ---
 
@@ -218,8 +248,9 @@ you shouldn't trust.
 ## 📜 License
 
 [MIT](LICENSE) — and every runtime dependency was license-checked:
-`sqlite-vec` (Apache-2.0), `fastembed` (Apache-2.0), `mcp` (MIT).
-No non-commercial or field-restricted weights anywhere in the stack.
+`sqlite-vec` (Apache-2.0), `fastembed` (Apache-2.0), `mcp` (MIT),
+`litellm` (MIT). No non-commercial or field-restricted weights anywhere in
+the stack.
 
 <div align="center">
 <br/>

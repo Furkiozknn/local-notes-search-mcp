@@ -1,0 +1,33 @@
+[project]
+name = "local-notes-search-mcp"
+version = "0.1.0"
+description = "Semantic search over your own local files as an MCP server - sqlite-vec + a local ONNX embedding model, zero servers, zero API keys."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "mcp[cli]>=2.0.0",
+    "sqlite-vec>=0.1.6",
+    "fastembed>=0.4.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# Single-file MCP server, not a package - same fix nvidia-nim-mcp and
+# voice-io-mcp needed after setuptools' flat-layout auto-discovery broke the
+# moment a second top-level directory existed (e.g. an index .db file's
+# parent dir). Declaring the one real module explicitly skips discovery.
+py-modules = ["local_notes_search"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]

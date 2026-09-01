@@ -33,8 +33,15 @@ search_notes("what did I decide about the auth redesign?")
 |---|---|
 | `index_directory(path, extensions=None)` | Bir dizini (recursive) indexler. `.git`/`node_modules`/`.venv`/vb. ve 2MB üzeri dosyalar atlanır. Değişmemiş dosyalar atlanır, silinmiş dosyalar index'ten temizlenir. |
 | `search_notes(query, top_k=5, path_prefix=None)` | Doğal dilde semantik arama - dosya:satır aralığı + snippet + mesafe skoruyla sonuç döner. |
+| `ask_notes(question, top_k=5, path_prefix=None)` | `search_notes` ile aynı retrieval'ı yapar, sonra bir LLM'e (Groq → Mistral fallback) SADECE bulunan parçalara dayanarak soruyu cevaplatır, kaynak dosya:satır referanslarıyla birlikte. `GROQ_API_KEY`/`MISTRAL_API_KEY` gerekir - ikisi de yoksa ya da sağlayıcı başarısız olursa hata vermez, ham eşleşen parçaları döner (bkz. aşağıda). |
 | `list_indexed_files(path_prefix=None)` | Şu an index'te ne var, ne zaman indexlendi. |
 | `remove_directory(path)` | Bir dizin altındaki her şeyi index'ten kaldırır (dosyaları silmez, sadece index'i temizler). |
+
+`ask_notes` opsiyoneldir - `index_directory`/`search_notes`/`list_indexed_files`/
+`remove_directory` hiçbir API key gerektirmez ve tamamen yerelde çalışır. `ask_notes`
+sadece `GROQ_API_KEY` ya da `MISTRAL_API_KEY` ortam değişkeni ayarlıysa gerçek bir
+cevap sentezler; hiçbiri yoksa (ya da sağlayıcı çağrısı başarısız olursa) sessizce
+`search_notes`'un aynısına düşer, hiçbir zaman hata vermez.
 
 ## Kurulum
 

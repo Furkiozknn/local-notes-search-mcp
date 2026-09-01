@@ -1,7 +1,7 @@
 [project]
 name = "local-notes-search-mcp"
 version = "0.1.0"
-description = "Semantic search over your own local files as an MCP server - sqlite-vec + a local ONNX embedding model, zero servers, zero API keys."
+description = "Semantic search (and optional LLM Q&A) over your own local files as an MCP server - sqlite-vec + a local ONNX embedding model. Indexing/search need zero servers and zero API keys; ask_notes' LLM synthesis is opt-in via GROQ_API_KEY/MISTRAL_API_KEY."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
@@ -9,6 +9,7 @@ dependencies = [
     "mcp[cli]>=2.0.0",
     "sqlite-vec>=0.1.6",
     "fastembed>=0.4.0",
+    "litellm>=1.97.0",
 ]
 
 [dependency-groups]

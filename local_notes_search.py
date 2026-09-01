@@ -343,7 +343,14 @@ async def index_directory(path: str, extensions: list[str] | None = None) -> str
     return await asyncio.to_thread(_index_directory_sync, path, extensions)
 
 
-def _search_notes_sync(query: str, top_k: int, path_prefix: str | None) -> str:
+# Shared by search_notes and ask_notes - both need the same "embed query,
+# KNN lookup, filter by path_prefix, cap at top_k" retrieval step; only how
+# the result is presented (or further processed) differs. Extracted after
+# ask_notes was added, so retrieval logic exists in exactly one place (the
+# same reasoning nvidia-nim-mcp's _run_chat_chain extraction documents).
+def _retrieve(query: str, top_k: int, path_prefix: str | None) -> list[tuple] | str:
+    """Returns a list of (file_path, start_line, end_line, text, distance)
+    rows, or a str error message if the query/top_k is invalid."""
     import sqlite_vec
 
     if not query.strip():
@@ -370,16 +377,27 @@ def _search_notes_sync(query: str, top_k: int, path_prefix: str | None) -> str:
     if path_prefix:
         prefix = str(Path(path_prefix).expanduser().resolve())
         rows = [r for r in rows if is_under(r[0], prefix)]
-    rows = rows[:top_k]
+    return rows[:top_k]
 
-    if not rows:
-        return "Sonuç bulunamadı. Önce index_directory ile bir dizin indexlenmiş mi kontrol edin."
 
+def _format_results(rows: list[tuple]) -> str:
     lines = [f"{len(rows)} sonuç:"]
     for file_path, start_line, end_line, text, distance in rows:
         snippet = text if len(text) <= 400 else text[:400] + "…"
         lines.append(f"\n--- {file_path}:{start_line}-{end_line} (distance={distance:.4f}) ---\n{snippet}")
     return "\n".join(lines)
+
+
+NO_RESULTS_MESSAGE = "Sonuç bulunamadı. Önce index_directory ile bir dizin indexlenmiş mi kontrol edin."
+
+
+def _search_notes_sync(query: str, top_k: int, path_prefix: str | None) -> str:
+    rows = _retrieve(query, top_k, path_prefix)
+    if isinstance(rows, str):
+        return rows
+    if not rows:
+        return NO_RESULTS_MESSAGE
+    return _format_results(rows)
 
 
 @mcp.tool()
@@ -388,6 +406,101 @@ async def search_notes(query: str, top_k: int = 5, path_prefix: str | None = Non
     matching chunks with file path, line range, and a relevance-ordered
     snippet - not just a bag of file names."""
     return await asyncio.to_thread(_search_notes_sync, query, top_k, path_prefix)
+
+
+# --- ask_notes: retrieve + LLM synthesis --------------------------------
+# Independent litellm provider chain, NOT a call into nvidia-nim-mcp - MCP
+# servers can't call each other's tools directly (only the orchestrating
+# LLM can invoke a tool), so this reuses the *design pattern* of
+# nvidia-nim-mcp's free-tier fallback chain, not its code (same
+# "independent implementation, shared pattern, no coupling" precedent
+# model-comparison-harness's --rubric feature already established in this
+# ecosystem). Both model names below are ones nvidia-nim-mcp already
+# confirmed working with a real call (2026-08-22) - reused here specifically
+# to avoid introducing yet another unverified model name from memory.
+LLM_PROVIDER_CHAIN = [
+    {"env": "GROQ_API_KEY", "model": "groq/openai/gpt-oss-120b"},
+    {"env": "MISTRAL_API_KEY", "model": "mistral/mistral-small-latest"},
+]
+
+ASK_NOTES_SYSTEM_PROMPT = (
+    "Sen kullanıcının kendi yerel dosyalarından alınan parçaları kullanarak soru "
+    "cevaplayan bir asistansın. SADECE aşağıda verilen bağlamdaki bilgiyi kullan; "
+    "bağlamda cevap yoksa uydurma, açıkça 'Bu bilgi indexlenen dosyalarda bulunamadı' de."
+)
+
+
+def _build_llm_chain() -> list[dict]:
+    chain = []
+    for provider in LLM_PROVIDER_CHAIN:
+        key = os.environ.get(provider["env"])
+        if key:
+            chain.append({"model": provider["model"], "api_key": key})
+    return chain
+
+
+async def _synthesize_answer(question: str, rows: list[tuple]) -> str | None:
+    """Returns None (not raises) if no LLM provider is configured, every
+    configured provider fails, or a provider responds successfully but with
+    no usable content (empty `choices`, or empty/None message content - some
+    providers return this for a moderation-filtered or tool-call-only
+    completion) - the caller degrades to raw search results in every one of
+    these cases rather than erroring out or crashing on an IndexError."""
+    chain = _build_llm_chain()
+    if not chain:
+        return None
+
+    context = "\n\n".join(f"[{fp}:{sl}-{el}]\n{text}" for fp, sl, el, text, _ in rows)
+    messages = [
+        {"role": "system", "content": ASK_NOTES_SYSTEM_PROMPT},
+        {"role": "user", "content": f"Bağlam:\n{context}\n\nSoru: {question}"},
+    ]
+    primary, fallbacks = chain[0], chain[1:]
+    try:
+        import litellm
+
+        response = await litellm.acompletion(messages=messages, max_tokens=1024, fallbacks=fallbacks or None, **primary)
+        content = response.choices[0].message.content if response.choices else None
+    except Exception as e:
+        logger.warning("ask_notes: LLM synthesis failed across the whole chain: %s", e)
+        return None
+    return content or None
+
+
+async def _ask_notes_async(question: str, top_k: int, path_prefix: str | None) -> str:
+    rows = await asyncio.to_thread(_retrieve, question, top_k, path_prefix)
+    if isinstance(rows, str):
+        return rows
+    if not rows:
+        return NO_RESULTS_MESSAGE
+
+    if not _build_llm_chain():
+        return (
+            "Not: GROQ_API_KEY ya da MISTRAL_API_KEY yapılandırılmamış - cevap sentezlenemedi, "
+            "ham eşleşen parçalar:\n\n" + _format_results(rows)
+        )
+
+    answer = await _synthesize_answer(question, rows)
+    if answer is None:
+        return (
+            "Not: LLM sağlayıcı(lar)ından geçerli bir yanıt alınamadı (hata ya da boş içerik) - "
+            "ham eşleşen parçalar:\n\n" + _format_results(rows)
+        )
+
+    sources = "\n".join(f"  - {fp}:{sl}-{el}" for fp, sl, el, _, _ in rows)
+    return f"{answer}\n\nKaynaklar:\n{sources}"
+
+
+@mcp.tool()
+async def ask_notes(question: str, top_k: int = 5, path_prefix: str | None = None) -> str:
+    """Ask a question in natural language about your indexed files. Retrieves
+    the most relevant chunks (same retrieval as search_notes) and asks an LLM
+    (Groq, then Mistral fallback - needs GROQ_API_KEY or MISTRAL_API_KEY) to
+    synthesize an answer grounded ONLY in those chunks, with file:line
+    sources. Without either key configured, degrades to returning the raw
+    retrieved chunks with a note that no LLM is available - never fails
+    outright just because synthesis isn't possible."""
+    return await _ask_notes_async(question, top_k, path_prefix)
 
 
 def _list_indexed_files_sync(path_prefix: str | None) -> str:

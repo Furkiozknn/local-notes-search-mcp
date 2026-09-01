@@ -23,7 +23,7 @@ Two design choices exist specifically to make that true:
 sqlite-vec's exact Python binding surface (`sqlite_vec.load()`,
 `sqlite_vec.serialize_float32()`) and fastembed's `TextEmbedding` API were
 used per their published documentation but were not live-exercised against a
-real installed package while writing this (see README "Bilinen sınırlamalar")
+real installed package while writing this (see README "Known limitations")
 - the same "verify before fully trusting a name from memory" discipline
 nvidia-nim-mcp and voice-io-mcp both document for their own provider names.
 """

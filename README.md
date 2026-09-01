@@ -216,7 +216,7 @@ What that means in practice, reported exactly as measured:
 
 | Environment | Result |
 |---|---|
-| ✅ Original build environment (model downloadable) | **25 / 25 passed**, including the real end-to-end flow — the fastembed model really loaded, the sqlite-vec extension really ran, and a *"how do I bake a cake"* query really retrieved the relevant file while excluding the irrelevant one. |
+| ✅ Development environment (fastembed model downloadable) | **37 / 37 passed**, including the real end-to-end flow — the fastembed model really loaded, the sqlite-vec extension really ran, and a *"how do I bake a cake"* query really retrieved the relevant file while excluding the irrelevant one. |
 | ⚠️ A sandbox with the model download blocked | **24 passed, 13 skipped** — every model-free test green, and the 13 model-backed tests skipped with an explicit reason instead of a false pass. |
 
 The second row is the honest cost of the first: this suite tells you when it

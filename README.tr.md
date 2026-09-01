@@ -218,7 +218,7 @@ Pratikte ne anlama geldiği, ölçüldüğü gibi:
 
 | Ortam | Sonuç |
 |---|---|
-| ✅ Orijinal build ortamı (model indirilebiliyor) | **25 / 25 geçti**, gerçek uçtan uca akış dahil — fastembed modeli gerçekten yüklendi, sqlite-vec eklentisi gerçekten çalıştı ve *"pasta nasıl pişirilir"* araması gerçekten alakalı dosyayı bulup alakasız dosyayı hariç tuttu. |
+| ✅ Geliştirme ortamı (fastembed modeli indirilebiliyor) | **37 / 37 geçti**, gerçek uçtan uca akış dahil — fastembed modeli gerçekten yüklendi, sqlite-vec eklentisi gerçekten çalıştı ve *"pasta nasıl pişirilir"* araması gerçekten alakalı dosyayı bulup alakasız dosyayı hariç tuttu. |
 | ⚠️ Model indirmesi engellenmiş bir sandbox | **24 geçti, 13 skip** — modele ihtiyaç duymayan her test yeşil; modele dayanan 13 test ise sahte bir geçiş yerine açık bir gerekçeyle skip edildi. |
 
 İkinci satır, birincinin dürüst bedeli: bu suite, bir şeyi *doğrulayamadığında*

@@ -7,6 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 import local_notes_search as lns
 from tests.conftest import requires_model, requires_sqlite_vec
@@ -180,13 +181,13 @@ def test_mismatched_embedding_model_raises(tmp_db_path: Path, monkeypatch):
     conn.close()
 
     monkeypatch.setattr(lns, "EMBEDDING_MODEL_NAME", "some/other-model")
-    with pytest.raises(RuntimeError, match="embedding model"):
+    with pytest.raises(ToolError, match="embedding model"):
         lns.get_connection(tmp_db_path)
 
 
 def test_unsupported_model_override_fails_with_the_supported_list(monkeypatch):
     monkeypatch.setattr(lns, "EMBEDDING_MODEL_NAME", "nonexistent/model")
-    with pytest.raises(RuntimeError) as excinfo:
+    with pytest.raises(ToolError) as excinfo:
         lns._embedding_dim()
     assert "not a model this fastembed build supports" in str(excinfo.value)
     assert "paraphrase-multilingual-MiniLM-L12-v2" in str(excinfo.value)

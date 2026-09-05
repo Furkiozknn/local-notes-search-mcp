@@ -89,7 +89,7 @@ flowchart LR
         B --> H{"🔐 Content hash<br/>changed?"}
         H -- "no" --> SKIP["⏭️ Skip<br/>zero CPU"]
         H -- "yes" --> C["✂️ Line-based chunker<br/>1500 chars + 200 overlap<br/>never splits a line"]
-        C --> D["🧠 fastembed ONNX<br/>bge-small-en-v1.5 · 384-d"]
+        C --> D["🧠 fastembed ONNX<br/>paraphrase-multilingual-MiniLM-L12-v2 · 384-d"]
     end
 
     D --> DB[("🗄️ sqlite-vec<br/>vec0 virtual table<br/>~/.local-notes-search/index.db")]
@@ -193,7 +193,7 @@ Default indexed extensions: `.md` `.txt` `.py` `.js` `.ts` `.tsx` `.jsx` `.json`
 |---|---|
 | 🗄️ **`sqlite-vec` (Apache-2.0)** for vector storage | A `vec0` virtual table inside one ordinary `.sqlite` file — **no daemon, no Docker, no hosted service**. Qdrant and pgvector were evaluated and rejected *specifically* because both need a running server process. A personal notes index should not require ops. |
 | ⚡ **`fastembed` (Apache-2.0), not `sentence-transformers`** | Local embedding here is the **only** path — it runs on every index and every search. `sentence-transformers` drags in torch (~1 GB); that's an acceptable price for a rarely-hit fallback, but not for the hot path. fastembed's quantized ONNX models land around **100–150 MB with no torch at all**. A deliberate divergence, documented in the module docstring. |
-| 🧬 **`BAAI/bge-small-en-v1.5`, 384 dims** | Small, fast, permissively licensed, general-purpose. Plenty for personal-notes scale. **No GPU required.** |
+| 🧬 **`paraphrase-multilingual-MiniLM-L12-v2`, 384 dims** | Small (0.22 GB), Apache-2.0, and — decisive for this tool — **actually multilingual**: the previous `bge-small-en-v1.5` was an English-only model quietly embedding Turkish notes. Symmetric, so queries and passages embed identically. Override with `LOCAL_NOTES_SEARCH_MODEL`; a mismatched existing index is refused, never silently compared. **No GPU required.** |
 | ✂️ **Line-based chunking, no NLP/AST dependency** | Chunks accumulate whole lines until a character budget is hit — **a line is never split in half**, so every `file:line` reference the tool returns is exact. An overlap window keeps context alive across boundaries. Deterministic, and fully unit-testable without loading the embedding model. |
 | 🔐 **Whole-file content-hash skip on re-index** | `index_directory` is designed to be re-run constantly. Re-embedding unchanged files would burn CPU on every single call for zero benefit — one cheap hash comparison avoids it. |
 
@@ -229,13 +229,14 @@ The second row is the honest cost of the first: this suite tells you when it
 Written down on purpose, because a README that claims no weaknesses is a README
 you shouldn't trust.
 
-- **BGE's asymmetric query-instruction prefix isn't used.** Models like
-  `bge-small-en-v1.5` recommend embedding the *query* with an instruction
-  prefix (`"Represent this sentence for searching relevant passages: "`),
-  distinct from how documents are embedded. This tool embeds both the same
-  way — a conscious v1 simplification that costs some retrieval quality.
-  fastembed's model-specific API surface for this (`query_embed`-style) was
-  **not** used from memory without live verification.
+- **No query-instruction prefix is needed anymore.** The previous
+  English-only `bge-small-en-v1.5` recommended embedding queries with an
+  instruction prefix, which this tool skipped as a v1 simplification. The
+  current default, `paraphrase-multilingual-MiniLM-L12-v2`, is a symmetric
+  model: queries and passages are *meant* to embed identically, so the
+  simplification is now simply the correct usage. If you override
+  `LOCAL_NOTES_SEARCH_MODEL` with an asymmetric model (BGE/E5 family),
+  know that its prefix convention is still not applied.
 - **CI re-downloads the fastembed model on every run** (no `actions/cache`
   configured). Acceptable for a small project; easy to speed up later. Low
   priority, and honestly labelled as not done.

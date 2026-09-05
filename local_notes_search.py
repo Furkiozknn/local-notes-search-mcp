@@ -51,8 +51,36 @@ mcp = MCPServer("local-notes-search")
 DEFAULT_DB_PATH = Path.home() / ".local-notes-search" / "index.db"
 DB_PATH = Path(os.environ.get("LOCAL_NOTES_SEARCH_DB", str(DEFAULT_DB_PATH)))
 
-EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5"
-EMBEDDING_DIM = 384
+# The MCP-ecosystem audit's highest-impact finding: this tool's prompts,
+# docs and target corpus are Turkish, but bge-small-en-v1.5 is an
+# English-only model (fastembed's own metadata says so) - Turkish notes
+# were being embedded by a model that has never seen the language.
+# paraphrase-multilingual-MiniLM-L12-v2 is the multilingual model
+# fastembed actually ships at this size: 50+ languages including Turkish,
+# the same 384 dimensions, 0.22 GB, Apache-2.0, and symmetric (queries and
+# passages embed identically, so no instruction-prefix asymmetry to
+# manage). Overridable for experiments; the index stores the model name
+# and get_connection() refuses a mismatched index rather than comparing
+# incomparable vectors.
+EMBEDDING_MODEL_NAME = os.environ.get(
+    "LOCAL_NOTES_SEARCH_MODEL", "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+)
+
+
+def _embedding_dim() -> int:
+    """The configured model's dimension, from fastembed's own registry -
+    hardcoding 384 would silently corrupt the vector table the first time
+    someone overrides the model with a 768-d one."""
+    from fastembed import TextEmbedding
+
+    for model in TextEmbedding.list_supported_models():
+        if model["model"] == EMBEDDING_MODEL_NAME:
+            return int(model["dim"])
+    supported = ", ".join(sorted(m["model"] for m in TextEmbedding.list_supported_models()))
+    raise RuntimeError(
+        f"LOCAL_NOTES_SEARCH_MODEL={EMBEDDING_MODEL_NAME!r} is not a model this "
+        f"fastembed build supports. Supported: {supported}"
+    )
 
 DEFAULT_EXTENSIONS = {".md", ".txt", ".py", ".js", ".ts", ".tsx", ".jsx", ".json", ".yaml", ".yml", ".rst", ".toml"}
 SKIP_DIR_NAMES = {".git", ".venv", "venv", "node_modules", "__pycache__", "dist", "build", ".pytest_cache", ".next", "egg-info"}
@@ -210,7 +238,9 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     existing_model = conn.execute("SELECT value FROM meta WHERE key = 'embedding_model'").fetchone()
     if existing_model is None:
         conn.execute("INSERT INTO meta (key, value) VALUES ('embedding_model', ?)", (EMBEDDING_MODEL_NAME,))
-        conn.execute(f"CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vectors USING vec0(embedding float[{EMBEDDING_DIM}])")
+        conn.execute(
+            f"CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vectors USING vec0(embedding float[{_embedding_dim()}])"
+        )
         conn.commit()
     elif existing_model[0] != EMBEDDING_MODEL_NAME:
         # A different embedding model's vectors are not comparable to this

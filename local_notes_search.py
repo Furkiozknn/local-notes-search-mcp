@@ -41,6 +41,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +78,11 @@ def _embedding_dim() -> int:
         if model["model"] == EMBEDDING_MODEL_NAME:
             return int(model["dim"])
     supported = ", ".join(sorted(m["model"] for m in TextEmbedding.list_supported_models()))
-    raise RuntimeError(
+    # ToolError, not RuntimeError: under mcp >= 2.1 a plain exception is
+    # masked to a generic "Error executing tool ..." (verified against the
+    # installed SDK), and this message - like the index-mismatch one below -
+    # exists precisely to tell the caller how to fix their setup.
+    raise ToolError(
         f"LOCAL_NOTES_SEARCH_MODEL={EMBEDDING_MODEL_NAME!r} is not a model this "
         f"fastembed build supports. Supported: {supported}"
     )
@@ -252,7 +257,7 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
         # Windows until GC.
         mismatched_model = existing_model[0]
         conn.close()
-        raise RuntimeError(
+        raise ToolError(
             f"Index at {path} was built with embedding model {mismatched_model!r}, "
             f"but this build uses {EMBEDDING_MODEL_NAME!r}. Delete the index file "
             f"or set LOCAL_NOTES_SEARCH_DB to a fresh path, then re-index."
@@ -489,7 +494,15 @@ async def _synthesize_answer(question: str, rows: list[tuple]) -> str | None:
     try:
         import litellm
 
-        response = await litellm.acompletion(messages=messages, max_tokens=1024, fallbacks=fallbacks or None, **primary)
+        response = await litellm.acompletion(
+            messages=messages,
+            max_tokens=1024,
+            fallbacks=fallbacks or None,
+            # litellm's default is 600s; a wedged provider must not hold
+            # ask_notes for ten minutes before degrading to raw results.
+            timeout=120.0,
+            **primary,
+        )
         content = response.choices[0].message.content if response.choices else None
     except Exception as e:
         logger.warning("ask_notes: LLM synthesis failed across the whole chain: %s", e)

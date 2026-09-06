@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 492" width="1200" height="492" role="img" aria-label="What never leaves the machine - walking, hashing, chunking, embedding and the whole vector search path, with unchanged files skipped by content hash and results carrying file, line and distance - against what is opt-in or honestly unfinished: ask_notes needs an API key and is grounded only in retrieved chunks, an overridden asymmetric model gets no query prefix, CI re-downloads the model each run, and SQLite is a single writer.">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0d1117"/>
+      <stop offset="55%" stop-color="#0f1f26"/>
+      <stop offset="100%" stop-color="#0b1920"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#39d3bb"/>
+      <stop offset="50%" stop-color="#4c8dff"/>
+      <stop offset="100%" stop-color="#a371f7"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#8b98a9"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="492" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1200" height="4" fill="url(#accent)"/>
+  <text x="40" y="56" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="24" font-weight="700" fill="#e6edf3">what stays local, and what is written down as not done</text>
+  <text x="40" y="84" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="14.5" fill="#8b98a9">a README that claims no weaknesses is one you should not trust - so these are stated, not buried</text>
+    <rect x="40" y="128" width="550" height="242" rx="14" fill="#131a26" stroke="#3fb950" stroke-width="1.6"/>
+    <text x="62" y="160" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="700" fill="#3fb950">never leaves the machine</text>
+    <path d="M62 172 L568 172" stroke="#26324a" stroke-width="1"/>
+    <circle cx="70" cy="193" r="3.5" fill="#3fb950"/>
+    <text x="86" y="198" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#e6edf3">Indexing: walk, hash, chunk and embed, all local</text>
+    <circle cx="70" cy="223" r="3.5" fill="#3fb950"/>
+    <text x="86" y="228" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#e6edf3">search_notes: query embedding and vector lookup,</text>
+    <text x="86" y="258" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#8b98a9">100% offline once the model is cached</text>
+    <circle cx="70" cy="283" r="3.5" fill="#3fb950"/>
+    <text x="86" y="288" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#e6edf3">Unchanged files are skipped by content hash -</text>
+    <text x="86" y="318" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#8b98a9">re-indexing costs zero CPU on what did not move</text>
+    <circle cx="70" cy="343" r="3.5" fill="#3fb950"/>
+    <text x="86" y="348" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#e6edf3">Results carry file:line, a snippet and a distance</text>
+    <rect x="610" y="128" width="550" height="242" rx="14" fill="#131a26" stroke="#f0b429" stroke-width="1.6"/>
+    <text x="632" y="160" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" font-weight="700" fill="#f0b429">opt-in, or honestly unfinished</text>
+    <path d="M632 172 L1138 172" stroke="#26324a" stroke-width="1"/>
+    <circle cx="640" cy="193" r="3.5" fill="#f0b429"/>
+    <text x="656" y="198" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#e6edf3">ask_notes is the only tool that needs a key, and it</text>
+    <text x="656" y="228" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#8b98a9">is grounded in the retrieved chunks alone</text>
+    <circle cx="640" cy="253" r="3.5" fill="#f0b429"/>
+    <text x="656" y="258" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#e6edf3">Override the model with a BGE or E5 family one and</text>
+    <text x="656" y="288" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#8b98a9">its query-prefix convention is not applied</text>
+    <circle cx="640" cy="313" r="3.5" fill="#f0b429"/>
+    <text x="656" y="318" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#e6edf3">CI re-downloads the model each run: no actions/cache</text>
+    <circle cx="640" cy="343" r="3.5" fill="#f0b429"/>
+    <text x="656" y="348" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#e6edf3">Single-writer SQLite - separate processes can collide</text>
+    <rect x="40" y="404" width="270" height="52" rx="12" fill="#131a26" stroke="#26324a" stroke-width="1.4"/>
+    <text x="60" y="426" text-anchor="start" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#39d3bb">chunk</text>
+    <text x="60" y="444" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" fill="#8b98a9">1500 chars, 200 overlap</text>
+    <rect x="330" y="404" width="270" height="52" rx="12" fill="#131a26" stroke="#26324a" stroke-width="1.4"/>
+    <text x="350" y="426" text-anchor="start" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#39d3bb">never splits</text>
+    <text x="350" y="444" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" fill="#8b98a9">a line</text>
+    <rect x="620" y="404" width="270" height="52" rx="12" fill="#131a26" stroke="#26324a" stroke-width="1.4"/>
+    <text x="640" y="426" text-anchor="start" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#39d3bb">skipped</text>
+    <text x="640" y="444" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" fill="#8b98a9">files over 2 MB</text>
+    <rect x="910" y="404" width="270" height="52" rx="12" fill="#131a26" stroke="#26324a" stroke-width="1.4"/>
+    <text x="930" y="426" text-anchor="start" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#39d3bb">model</text>
+    <text x="930" y="444" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="12.5" fill="#8b98a9">384-d, symmetric</text>
+</svg>

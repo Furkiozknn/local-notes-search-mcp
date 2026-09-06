@@ -226,6 +226,8 @@ The second row is the honest cost of the first: this suite tells you when it
 
 ## ⚠️ Known limitations
 
+<img src="assets/limits.svg" alt="What never leaves the machine - walking, hashing, chunking, embedding and the whole vector search path, with unchanged files skipped by content hash and results carrying file, line and distance - against what is opt-in or honestly unfinished: ask_notes needs an API key and is grounded only in retrieved chunks, an overridden asymmetric model gets no query prefix, CI re-downloads the model each run, and SQLite is a single writer." width="100%">
+
 Written down on purpose, because a README that claims no weaknesses is a README
 you shouldn't trust.
 

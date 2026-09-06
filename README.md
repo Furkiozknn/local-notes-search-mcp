@@ -205,7 +205,7 @@ Default indexed extensions: `.md` `.txt` `.py` `.js` `.ts` `.tsx` `.jsx` `.json`
 uv run pytest -v
 ```
 
-**37 tests, on a deliberate two-tier strategy.** Pure-logic tests (chunking,
+**38 tests, on a deliberate two-tier strategy.** Pure-logic tests (chunking,
 hashing, file walking, `ask_notes`' provider-chain and degradation paths)
 always run — no model, no network, no API key. Tests that need the real
 fastembed model or the sqlite-vec extension **skip honestly** when those can't

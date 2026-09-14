@@ -47,6 +47,9 @@ dev = [
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
+[project.scripts]
+local-notes-search-mcp = "local_notes_search:main"
+
 [tool.setuptools]
 # Single-file MCP server, not a package - same fix nvidia-nim-mcp and
 # voice-io-mcp needed after setuptools' flat-layout auto-discovery broke the

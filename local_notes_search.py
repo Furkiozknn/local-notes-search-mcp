@@ -596,5 +596,16 @@ async def remove_directory(path: str) -> str:
     return await asyncio.to_thread(_remove_directory_sync, path)
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Konsol giris noktasi.
+
+    Ayri bir fonksiyon, cunku `[project.scripts]` bir modul degil bir
+    CAGRILABILIR istiyor. Bu olmadan paket kurulabiliyor ama
+    calistirilamiyor: kullanicinin depoyu klonlayip dosyaya yol
+    gostermesi gerekiyor, ki bu da yayinlamanin amacini bosa cikariyor.
+    """
     mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()

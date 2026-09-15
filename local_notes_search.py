@@ -31,6 +31,7 @@ nvidia-nim-mcp and voice-io-mcp both document for their own provider names.
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import hashlib
 import logging
 import os
@@ -91,6 +92,22 @@ DEFAULT_EXTENSIONS = {".md", ".txt", ".py", ".js", ".ts", ".tsx", ".jsx", ".json
 SKIP_DIR_NAMES = {".git", ".venv", "venv", "node_modules", "__pycache__", "dist", "build", ".pytest_cache", ".next", "egg-info"}
 MAX_FILE_BYTES = 2 * 1024 * 1024  # skip anything bigger - pathological chunk counts, probably not a "note"
 
+# Opt-in directory allowlist. index_directory otherwise happily indexes any
+# path the running user can read, and ask_notes then ships retrieved chunks
+# to a third-party LLM - so an indexed path is a path whose contents can
+# leave the machine. os.pathsep-separated, same shape and spirit as
+# mini-creative-toolkit's MCT_ALLOWED_ROOTS, and unset by default: an empty
+# default is not a sandbox and this project does not claim it is one.
+ALLOWED_ROOTS_ENV = "LOCAL_NOTES_SEARCH_ALLOWED_ROOTS"
+
+# Never indexed, whatever the extension filter, the allowed roots, or the
+# caller's intent: file names that hold credentials outright. Cheap insurance
+# against the obvious cases only - this is a name denylist, not a secret
+# scanner, and it is applied unconditionally precisely because the allowlist
+# above is opt-in.
+SECRET_FILENAMES = {".env", ".netrc", "_netrc", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "credentials.json"}
+SECRET_FILENAME_GLOBS = ("*.pem", ".env.*")
+
 CHUNK_CHARS = 1500
 CHUNK_OVERLAP_CHARS = 200
 
@@ -146,7 +163,42 @@ def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
 
 
+def is_secret_filename(name: str) -> bool:
+    """True for file names that are, by name alone, almost certainly
+    credentials. Case-insensitive: Windows and macOS filesystems routinely
+    hand back `.ENV` for a file created as `.env`."""
+    lowered = name.lower()
+    if lowered in SECRET_FILENAMES:
+        return True
+    return any(fnmatch.fnmatch(lowered, pattern) for pattern in SECRET_FILENAME_GLOBS)
+
+
+def allowed_roots() -> list[Path]:
+    """Resolved roots from LOCAL_NOTES_SEARCH_ALLOWED_ROOTS, or an empty list
+    when it is unset (meaning: no restriction, the documented default).
+
+    Read per call rather than at import time so a client can change it
+    without a server restart. A configured-but-unusable entry raises instead
+    of being dropped - silently discarding every entry would turn the
+    allowlist off, which is exactly the wrong way for this to fail."""
+    raw = os.environ.get(ALLOWED_ROOTS_ENV)
+    if not raw:
+        return []
+    roots = []
+    for part in raw.split(os.pathsep):
+        part = part.strip()
+        if not part:
+            continue
+        root = Path(part).expanduser().resolve()
+        if not root.is_dir():
+            raise ToolError(f"{ALLOWED_ROOTS_ENV} entry {part!r} is not a directory")
+        roots.append(root)
+    return roots
+
+
 def should_index_file(path: Path, extensions: set[str]) -> bool:
+    if is_secret_filename(path.name):
+        return False
     if path.suffix.lower() not in extensions:
         return False
     if any(part in SKIP_DIR_NAMES or part.endswith(".egg-info") for part in path.parts):
@@ -235,33 +287,38 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     path = db_path or DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
-    conn.enable_load_extension(True)
-    sqlite_vec.load(conn)
-    conn.enable_load_extension(False)
-    conn.executescript(_SCHEMA)
+    # Every error path out of here must close `conn` first. Callers do
+    # `conn = get_connection()` then `try/finally: conn.close()`, and that
+    # finally never runs if the assignment itself never completes - the
+    # connection would leak, holding the index file locked on Windows until
+    # GC. Only the model-mismatch branch used to handle this; _embedding_dim()
+    # raising ToolError for an unsupported LOCAL_NOTES_SEARCH_MODEL (and any
+    # failure in the extension load or schema setup) leaked straight through.
+    try:
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+        conn.executescript(_SCHEMA)
 
-    existing_model = conn.execute("SELECT value FROM meta WHERE key = 'embedding_model'").fetchone()
-    if existing_model is None:
-        conn.execute("INSERT INTO meta (key, value) VALUES ('embedding_model', ?)", (EMBEDDING_MODEL_NAME,))
-        conn.execute(
-            f"CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vectors USING vec0(embedding float[{_embedding_dim()}])"
-        )
-        conn.commit()
-    elif existing_model[0] != EMBEDDING_MODEL_NAME:
-        # A different embedding model's vectors are not comparable to this
-        # model's query vectors - refuse rather than silently returning
-        # garbage similarity scores (see README "pitfalls"). Close before
-        # raising - callers do `conn = get_connection()` then
-        # `try/finally: conn.close()`, which never runs if this assignment
-        # itself never completes, otherwise leaving the file locked on
-        # Windows until GC.
-        mismatched_model = existing_model[0]
+        existing_model = conn.execute("SELECT value FROM meta WHERE key = 'embedding_model'").fetchone()
+        if existing_model is None:
+            conn.execute("INSERT INTO meta (key, value) VALUES ('embedding_model', ?)", (EMBEDDING_MODEL_NAME,))
+            conn.execute(
+                f"CREATE VIRTUAL TABLE IF NOT EXISTS chunk_vectors USING vec0(embedding float[{_embedding_dim()}])"
+            )
+            conn.commit()
+        elif existing_model[0] != EMBEDDING_MODEL_NAME:
+            # A different embedding model's vectors are not comparable to this
+            # model's query vectors - refuse rather than silently returning
+            # garbage similarity scores (see README "pitfalls").
+            raise ToolError(
+                f"Index at {path} was built with embedding model {existing_model[0]!r}, "
+                f"but this build uses {EMBEDDING_MODEL_NAME!r}. Delete the index file "
+                f"or set LOCAL_NOTES_SEARCH_DB to a fresh path, then re-index."
+            )
+    except BaseException:
         conn.close()
-        raise ToolError(
-            f"Index at {path} was built with embedding model {mismatched_model!r}, "
-            f"but this build uses {EMBEDDING_MODEL_NAME!r}. Delete the index file "
-            f"or set LOCAL_NOTES_SEARCH_DB to a fresh path, then re-index."
-        )
+        raise
     return conn
 
 
@@ -334,6 +391,13 @@ def _index_directory_sync(path: str, extensions: list[str] | None) -> str:
     if not root.is_dir():
         return f"Hata: {root} bir dizin değil ya da bulunamadı."
 
+    roots = allowed_roots()
+    if roots and not any(is_under(str(root), str(r)) for r in roots):
+        return (
+            f"Hata: {root} izin verilen köklerin dışında. "
+            f"{ALLOWED_ROOTS_ENV}: {os.pathsep.join(str(r) for r in roots)}"
+        )
+
     ext_set = {(e if e.startswith(".") else f".{e}").lower() for e in extensions} if extensions else DEFAULT_EXTENSIONS
     conn = get_connection()
     try:
@@ -374,7 +438,12 @@ async def index_directory(path: str, extensions: list[str] | None = None) -> str
     skips any file whose content is unchanged since the last index (cheap:
     a whole-file hash check before touching the embedding model). Files
     that were indexed before but no longer exist under `path` are removed
-    from the index."""
+    from the index.
+
+    Credential-shaped file names (.env, id_rsa, credentials.json, .netrc,
+    *.pem, ...) are never indexed. If LOCAL_NOTES_SEARCH_ALLOWED_ROOTS is
+    set, `path` must resolve inside one of its entries; unset (the default)
+    means any readable directory is indexable."""
     return await asyncio.to_thread(_index_directory_sync, path, extensions)
 
 
@@ -474,6 +543,20 @@ def _build_llm_chain() -> list[dict]:
     return chain
 
 
+def _redact(text: str) -> str:
+    """Scrub every configured provider API key out of an error string before
+    it is logged. Ported from voice-io-mcp's helper of the same name, widened
+    to cover the whole provider chain since there is no single "the" key
+    here. Defense-in-depth: no known code path embeds the raw key in an
+    exception's str(), but an underlying HTTP client doing so in some failure
+    mode isn't ruled out, and logs outlive the request that wrote them."""
+    for provider in LLM_PROVIDER_CHAIN:
+        key = os.environ.get(provider["env"])
+        if key:
+            text = text.replace(key, "***")
+    return text
+
+
 async def _synthesize_answer(question: str, rows: list[tuple]) -> str | None:
     """Returns None (not raises) if no LLM provider is configured, every
     configured provider fails, or a provider responds successfully but with
@@ -505,7 +588,7 @@ async def _synthesize_answer(question: str, rows: list[tuple]) -> str | None:
         )
         content = response.choices[0].message.content if response.choices else None
     except Exception as e:
-        logger.warning("ask_notes: LLM synthesis failed across the whole chain: %s", e)
+        logger.warning("ask_notes: LLM synthesis failed across the whole chain: %s", _redact(str(e)))
         return None
     return content or None
 

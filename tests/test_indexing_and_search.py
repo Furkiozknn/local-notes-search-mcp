@@ -4,6 +4,7 @@ importable/loadable - see conftest.py's `requires_model` skip marker."""
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,14 @@ from tests.conftest import requires_model, requires_sqlite_vec
 @pytest.fixture(autouse=True)
 def _isolated_db(monkeypatch, tmp_db_path: Path):
     monkeypatch.setattr(lns, "DB_PATH", tmp_db_path)
+
+
+@pytest.fixture(autouse=True)
+def _no_allowed_roots_by_default(monkeypatch):
+    """The allowlist is opt-in; every test below that doesn't set it must see
+    the documented default (unrestricted), not whatever the developer's own
+    shell happens to export."""
+    monkeypatch.delenv(lns.ALLOWED_ROOTS_ENV, raising=False)
 
 
 @requires_model
@@ -191,3 +200,135 @@ def test_unsupported_model_override_fails_with_the_supported_list(monkeypatch):
         lns._embedding_dim()
     assert "not a model this fastembed build supports" in str(excinfo.value)
     assert "paraphrase-multilingual-MiniLM-L12-v2" in str(excinfo.value)
+
+
+# --- secret-filename denylist (always on) and root allowlist (opt-in) ----
+
+@pytest.mark.parametrize(
+    "name",
+    [".env", ".ENV", ".env.production", ".netrc", "_netrc", "id_rsa", "id_ed25519",
+     "credentials.json", "server.pem", "SERVER.PEM"],
+)
+def test_secret_filenames_are_never_indexable(name):
+    assert lns.is_secret_filename(name) is True
+
+
+@pytest.mark.parametrize("name", ["notes.md", "environment.md", "credentials-policy.md", "readme.txt"])
+def test_ordinary_filenames_are_not_treated_as_secrets(name):
+    assert lns.is_secret_filename(name) is False
+
+
+def test_should_index_file_rejects_a_secret_even_with_an_allowed_extension(tmp_notes_dir: Path):
+    # credentials.json ends in .json, which IS in DEFAULT_EXTENSIONS - the
+    # extension filter alone would have indexed it and ask_notes could then
+    # ship its contents to a third-party LLM.
+    secret = tmp_notes_dir / "credentials.json"
+    secret.write_text('{"token": "super-secret"}')
+    assert lns.should_index_file(secret, lns.DEFAULT_EXTENSIONS) is False
+
+
+def test_should_index_file_rejects_dotenv_when_the_caller_widens_the_extensions(tmp_notes_dir: Path):
+    dotenv = tmp_notes_dir / ".env"
+    dotenv.write_text("GROQ_API_KEY=super-secret\n")
+    # A caller passing extensions=[""] would otherwise sweep in every
+    # suffix-less file, .env included.
+    assert lns.should_index_file(dotenv, {""}) is False
+
+
+def test_allowed_roots_is_empty_when_the_env_var_is_unset():
+    assert lns.allowed_roots() == []
+
+
+def test_allowed_roots_parses_pathsep_separated_entries(tmp_path, monkeypatch):
+    import os
+
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    monkeypatch.setenv(lns.ALLOWED_ROOTS_ENV, os.pathsep.join([str(a), str(b)]))
+    assert lns.allowed_roots() == [a.resolve(), b.resolve()]
+
+
+def test_allowed_roots_refuses_a_non_directory_entry_instead_of_dropping_it(tmp_path, monkeypatch):
+    # Dropping it silently could empty the list, which means "unrestricted" -
+    # a typo must not switch the allowlist off.
+    monkeypatch.setenv(lns.ALLOWED_ROOTS_ENV, str(tmp_path / "does-not-exist"))
+    with pytest.raises(ToolError, match=lns.ALLOWED_ROOTS_ENV):
+        lns.allowed_roots()
+
+
+@pytest.mark.asyncio
+async def test_index_directory_refuses_a_path_outside_the_allowed_roots(tmp_path, monkeypatch):
+    allowed = tmp_path / "allowed"
+    outside = tmp_path / "outside"
+    allowed.mkdir()
+    outside.mkdir()
+    (outside / "secrets.md").write_text("private stuff")
+
+    monkeypatch.setenv(lns.ALLOWED_ROOTS_ENV, str(allowed))
+
+    result = await lns.index_directory(str(outside))
+
+    assert "Hata" in result
+    assert lns.ALLOWED_ROOTS_ENV in result
+
+
+@requires_model
+@pytest.mark.asyncio
+async def test_index_directory_accepts_a_subdirectory_of_an_allowed_root(tmp_notes_dir: Path, monkeypatch):
+    nested = tmp_notes_dir / "nested"
+    nested.mkdir()
+    (nested / "a.md").write_text("content a")
+
+    monkeypatch.setenv(lns.ALLOWED_ROOTS_ENV, str(tmp_notes_dir))
+
+    summary = await lns.index_directory(str(nested))
+
+    assert "1 dosya (yeni/değişmiş)" in summary
+
+
+@requires_sqlite_vec
+def test_get_connection_closes_the_connection_when_embedding_dim_fails(tmp_db_path: Path, monkeypatch):
+    """Regression test: _embedding_dim() raising ToolError used to leak the
+    open connection, because the caller's `try/finally: conn.close()` never
+    runs when the `conn = get_connection()` assignment itself doesn't."""
+    opened = []
+    real_connect = sqlite3.connect
+
+    def _spy(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", _spy)
+    monkeypatch.setattr(lns, "EMBEDDING_MODEL_NAME", "nonexistent/model")
+
+    with pytest.raises(ToolError, match="not a model this fastembed build supports"):
+        lns.get_connection(tmp_db_path)
+
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError):
+        opened[0].execute("SELECT 1")
+
+
+@requires_sqlite_vec
+def test_get_connection_closes_the_connection_on_a_model_mismatch(tmp_db_path: Path, monkeypatch):
+    lns.get_connection(tmp_db_path).close()
+
+    opened = []
+    real_connect = sqlite3.connect
+
+    def _spy(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", _spy)
+    monkeypatch.setattr(lns, "EMBEDDING_MODEL_NAME", "some/other-model")
+
+    with pytest.raises(ToolError, match="embedding model"):
+        lns.get_connection(tmp_db_path)
+
+    assert len(opened) == 1
+    with pytest.raises(sqlite3.ProgrammingError):
+        opened[0].execute("SELECT 1")

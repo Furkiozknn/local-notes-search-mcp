@@ -11,7 +11,7 @@
 <br/>
 
 [![CI](https://github.com/Furkiozknn/local-notes-search-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Furkiozknn/local-notes-search-mcp/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-37-3fb950?logo=pytest&logoColor=white)](tests/)
+[![Tests](https://img.shields.io/badge/tests-50-3fb950?logo=pytest&logoColor=white)](tests/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-8957e5)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776ab?logo=python&logoColor=white)](.python-version)
 [![MCP](https://img.shields.io/badge/MCP-server-000000?logo=anthropic&logoColor=white)](https://modelcontextprotocol.io)
@@ -237,7 +237,7 @@ default `.json` extension filter), not a key pasted into a `.md` file.
 uv run pytest -v
 ```
 
-**38 tests, on a deliberate two-tier strategy.** Pure-logic tests (chunking,
+**50 tests, on a deliberate two-tier strategy.** Pure-logic tests (chunking,
 hashing, file walking, `ask_notes`' provider-chain and degradation paths)
 always run — no model, no network, no API key. Tests that need the real
 fastembed model or the sqlite-vec extension **skip honestly** when those can't
@@ -248,8 +248,8 @@ What that means in practice, reported exactly as measured:
 
 | Environment | Result |
 |---|---|
-| ✅ Development environment (fastembed model downloadable) | **37 / 37 passed**, including the real end-to-end flow — the fastembed model really loaded, the sqlite-vec extension really ran, and a *"how do I bake a cake"* query really retrieved the relevant file while excluding the irrelevant one. |
-| ⚠️ A sandbox with the model download blocked | **24 passed, 13 skipped** — every model-free test green, and the 13 model-backed tests skipped with an explicit reason instead of a false pass. |
+| ✅ Development environment (fastembed model downloadable) | **64 tests**, including the real end-to-end flow — the fastembed model really loaded, the sqlite-vec extension really ran, and a *"how do I bake a cake"* query really retrieved the relevant file while excluding the irrelevant one. |
+| ⚠️ A sandbox with the model download blocked | **50 passed, 14 skipped** — measured 15 September 2026. Every model-free test green, and the model-backed ones skipped with an explicit reason instead of a false pass. |
 
 The second row is the honest cost of the first: this suite tells you when it
 *couldn't* verify something.

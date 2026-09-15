@@ -242,7 +242,7 @@ yapıştırılmış anahtarı değil.
 uv run pytest -v
 ```
 
-**37 test, bilinçli iki katmanlı bir strateji üzerine.** Saf mantık testleri
+**50 test, bilinçli iki katmanlı bir strateji üzerine.** Saf mantık testleri
 (chunking, hash, dosya tarama, `ask_notes`'un sağlayıcı zinciri ve
 degradasyon yolları) her zaman çalışır — model yok, ağ yok, API anahtarı yok.
 Gerçek fastembed modelini veya sqlite-vec eklentisini gerektiren testler,
@@ -253,8 +253,8 @@ Pratikte ne anlama geldiği, ölçüldüğü gibi:
 
 | Ortam | Sonuç |
 |---|---|
-| ✅ Geliştirme ortamı (fastembed modeli indirilebiliyor) | **37 / 37 geçti**, gerçek uçtan uca akış dahil — fastembed modeli gerçekten yüklendi, sqlite-vec eklentisi gerçekten çalıştı ve *"pasta nasıl pişirilir"* araması gerçekten alakalı dosyayı bulup alakasız dosyayı hariç tuttu. |
-| ⚠️ Model indirmesi engellenmiş bir sandbox | **24 geçti, 13 skip** — modele ihtiyaç duymayan her test yeşil; modele dayanan 13 test ise sahte bir geçiş yerine açık bir gerekçeyle skip edildi. |
+| ✅ Geliştirme ortamı (fastembed modeli indirilebiliyor) | **64 test**, gerçek uçtan uca akış dahil — fastembed modeli gerçekten yüklendi, sqlite-vec eklentisi gerçekten çalıştı ve *"pasta nasıl pişirilir"* araması gerçekten alakalı dosyayı bulup alakasız dosyayı hariç tuttu. |
+| ⚠️ Model indirmesi engellenmiş bir sandbox | **50 geçti, 14 skip** — 15 Eylül 2026'da ölçüldü. Modele ihtiyaç duymayan her test yeşil; modele dayananlar ise sahte bir geçiş yerine açık bir gerekçeyle skip edildi. |
 
 İkinci satır, birincinin dürüst bedeli: bu suite, bir şeyi *doğrulayamadığında*
 size bunu söylüyor.

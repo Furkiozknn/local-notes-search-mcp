@@ -680,12 +680,12 @@ async def remove_directory(path: str) -> str:
 
 
 def main() -> None:
-    """Konsol giris noktasi.
+    """Console entry point.
 
-    Ayri bir fonksiyon, cunku `[project.scripts]` bir modul degil bir
-    CAGRILABILIR istiyor. Bu olmadan paket kurulabiliyor ama
-    calistirilamiyor: kullanicinin depoyu klonlayip dosyaya yol
-    gostermesi gerekiyor, ki bu da yayinlamanin amacini bosa cikariyor.
+    A separate function because `[project.scripts]` wants a CALLABLE, not a
+    module. Without it the package installs but cannot be run: the user would
+    have to clone the repository and point at the file, which defeats the
+    point of publishing it.
     """
     mcp.run(transport="stdio")
 

@@ -174,6 +174,7 @@ offline.
 | Env var | Default | What it does |
 |---|---|---|
 | `LOCAL_NOTES_SEARCH_DB` | `~/.local-notes-search/index.db` | Where the index lives. **One single file for every indexed directory** — so a single `search_notes` call can span all your project folders at once. |
+| `LOCAL_NOTES_SEARCH_ALLOWED_ROOTS` | *unset* | Optional allowlist. When set, `index_directory` refuses any path that does not resolve inside one of these directories. `os.pathsep`-separated (`:` on Linux/macOS, `;` on Windows). |
 | `GROQ_API_KEY` | *unset* | Optional. Enables `ask_notes` synthesis via Groq (first in the provider chain). |
 | `MISTRAL_API_KEY` | *unset* | Optional. Fallback provider for `ask_notes` when Groq is unset or fails. |
 
@@ -182,6 +183,37 @@ them in the MCP client config file you check into git.**
 
 Default indexed extensions: `.md` `.txt` `.py` `.js` `.ts` `.tsx` `.jsx` `.json`
 `.yaml` `.yml` `.rst` `.toml` — override per call with `extensions=[...]`.
+
+### 🔒 What can be indexed
+
+`index_directory` reads whatever it is pointed at, and `ask_notes` sends the
+chunks it retrieves to a **third-party LLM** (Groq or Mistral) when a key is
+configured. So an indexed path is a path whose contents can leave the machine.
+Two guards exist:
+
+**1. `LOCAL_NOTES_SEARCH_ALLOWED_ROOTS` (opt-in).** Unset by default — that is
+the historical behaviour, any directory the running user can read is
+indexable, and this project does not pretend an empty default is a sandbox.
+Set it and `index_directory` refuses anything outside:
+
+```bash
+export LOCAL_NOTES_SEARCH_ALLOWED_ROOTS="$HOME/notes:$HOME/projects"
+```
+
+Paths are resolved (`..` collapsed, symlinks followed) before the check, and a
+subdirectory of an allowed root is allowed. A configured entry that is not a
+directory is an error rather than being silently dropped — a typo must not
+quietly switch the allowlist off.
+
+**2. A credential-filename denylist (always on).** These are never indexed,
+whatever the allowlist or the `extensions=[...]` argument says:
+
+`.env` · `.env.*` · `.netrc` · `_netrc` · `id_rsa` · `id_dsa` · `id_ecdsa` ·
+`id_ed25519` · `credentials.json` · `*.pem`
+
+Matching is case-insensitive. It is a **name** denylist, not a secret scanner:
+it stops the obvious cases (`credentials.json` would otherwise sail through the
+default `.json` extension filter), not a key pasted into a `.md` file.
 
 </details>
 

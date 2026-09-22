@@ -256,6 +256,22 @@ The second row is the honest cost of the first: this suite tells you when it
 
 ---
 
+## What this server can actually do
+
+The expensive question about an MCP server is not what it promises but what it
+**can do on your machine**: which credentials it can touch, where it connects,
+what it runs. Answering that means reading the source, and most people will not.
+
+On every push, [mcp-vet](https://github.com/Furkiozknn/mcp-vet) from the same
+account audits this server from source and writes the whole report into the job
+summary. Today's verdict: **NOT_FLAGGED** (no finding sets the verdict). The gate closes at HIGH and
+above — and it also closes if the tool itself could not run, because "I could not
+look" should not read as green.
+
+Auditing our own server with our own tool had a side effect worth recording: adding
+this job surfaced a real false positive in mcp-vet, which was fixed. A tool nobody
+runs stays right by default.
+
 ## ⚠️ Known limitations
 
 <img src="assets/limits.svg" alt="What never leaves the machine - walking, hashing, chunking, embedding and the whole vector search path, with unchanged files skipped by content hash and results carrying file, line and distance - against what is opt-in or honestly unfinished: ask_notes needs an API key and is grounded only in retrieved chunks, an overridden asymmetric model gets no query prefix, CI re-downloads the model each run, and SQLite is a single writer." width="100%">

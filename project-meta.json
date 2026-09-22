@@ -51,9 +51,9 @@
     "videos": []
   },
   "tests": {
-    "count": 50,
-    "source": "`50 passed, 14 skipped` (skips need a model download CI does not do)",
-    "measured": "2026-09-15"
+    "count": 64,
+    "source": "`64 passed, 1 warning`",
+    "measured": "2026-09-22"
   },
   "ci": {
     "workflows": [

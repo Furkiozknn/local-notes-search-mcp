@@ -195,8 +195,8 @@ def test_index_file_is_owner_only(tmp_path: Path):
 def test_default_index_directory_is_owner_only(tmp_path: Path, monkeypatch):
     default = tmp_path / "home" / ".local-notes-search" / "index.db"
     monkeypatch.setattr(lns, "DEFAULT_DB_PATH", default)
-    default.parent.mkdir(parents=True, mode=0o755)
-    os.chmod(default.parent, 0o755)  # an index directory created by an older version
+    default.parent.mkdir(parents=True)
+    default.parent.chmod(0o755)  # an index directory created by an older version
 
     lns.get_connection(default).close()
 

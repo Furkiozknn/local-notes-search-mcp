@@ -38,6 +38,7 @@ import hashlib
 import logging
 import os
 import sqlite3
+import stat
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -395,7 +396,7 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     # 0755 directory), so on a shared machine any local user could read
     # every note that had been indexed. Owner-only on POSIX; Windows
     # profiles are already per-user and chmod cannot express that there.
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.parent.mkdir(mode=stat.S_IRWXU, parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     _restrict_permissions(path)
     # Every error path out of here must close `conn` first. Callers do
@@ -437,11 +438,11 @@ def _restrict_permissions(db_path: Path) -> None:
     if os.name != "posix":
         return
     try:
-        os.chmod(db_path, 0o600)
+        db_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
         # Only tighten a directory this tool owns - a user who put their DB
         # in an existing folder of their own keeps that folder's mode.
         if db_path.parent == DEFAULT_DB_PATH.parent:
-            os.chmod(db_path.parent, 0o700)
+            db_path.parent.chmod(stat.S_IRWXU)  # 0700: a directory needs x to be entered
     except OSError as e:  # not the owner, read-only fs, ... - never fatal
         logger.warning("could not restrict permissions on %s: %s", db_path, e)
 

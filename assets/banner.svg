@@ -80,5 +80,5 @@
     </g>
   </g>
 
-  <text x="178" y="272" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#5c6b7f">sqlite-vec &#183; fastembed ONNX &#183; bge-small-en-v1.5 &#183; zero daemons &#183; MIT</text>
+  <text x="178" y="272" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#5c6b7f">sqlite-vec &#183; fastembed ONNX &#183; multilingual MiniLM-L12 &#183; zero daemons &#183; MIT</text>
 </svg>

@@ -11,7 +11,7 @@
 <br/>
 
 [![CI](https://github.com/Furkiozknn/local-notes-search-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Furkiozknn/local-notes-search-mcp/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-91-3fb950?logo=pytest&logoColor=white)](tests/)
+[![Tests](https://img.shields.io/badge/tests-99-3fb950?logo=pytest&logoColor=white)](tests/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-8957e5)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776ab?logo=python&logoColor=white)](.python-version)
 [![MCP](https://img.shields.io/badge/MCP-server-000000?logo=anthropic&logoColor=white)](https://modelcontextprotocol.io)
@@ -52,6 +52,10 @@ directory — and search it by **meaning**, not by exact string match.
      ...agreed to revisit auth after the billing migration ships.
 ```
 
+<sub>Illustrative, condensed. The tools answer in Turkish, the author's working
+language — the real first line reads `… indexlendi: 128 dosya (yeni/değişmiş),
+12 değişmemiş dosya atlandı, 941 yeni chunk, 0 silinmiş dosya temizlendi.`</sub>
+
 Nothing in that flow touched the network. No OpenAI key, no Pinecone account,
 no Docker container, no `docker compose up` before you can search your own
 notes.
@@ -85,8 +89,8 @@ quietly returns the raw matches instead of failing.
 flowchart LR
     subgraph INDEX["📥 Index pipeline — runs when you ask it to"]
         direction LR
-        A["📁 Local folder"] --> B["🚶 Walk + filter<br/>skip .git, node_modules,<br/>.venv, files &gt; 2MB"]
-        B --> H{"🔐 Content hash<br/>changed?"}
+        A["📁 Local folder"] --> B["🚶 Walk + filter<br/>skip hidden, node_modules,<br/>.venv, files &gt; 2MB"]
+        B --> H{"🔐 Content hash<br/>or embedder changed?"}
         H -- "no" --> SKIP["⏭️ Skip<br/>zero CPU"]
         H -- "yes" --> C["✂️ Line-based chunker<br/>1500 chars + 200 overlap<br/>never splits a line"]
         C --> D["🧠 fastembed ONNX<br/>paraphrase-multilingual-MiniLM-L12-v2 · 384-d"]
@@ -118,10 +122,10 @@ flowchart LR
 
 | 🛠️ Tool | What it does |
 |---|---|
-| 🗂️ **`index_directory(path, extensions=None)`** | Recursively indexes a directory. Skips hidden directories (`.git`, `.ssh`, `.config`, …), `node_modules` / `venv` / `__pycache__` / `dist` / `build`, binary files and anything over 2 MB. Unchanged files are skipped via a cheap hash check; deleted (or no-longer-readable) files are purged from the index. |
+| 🗂️ **`index_directory(path, extensions=None)`** | Recursively indexes a directory. Skips hidden files and directories (`.git`, `.ssh`, `.config`, `.claude.json`, …), `node_modules` / `venv` / `__pycache__` / `dist` / `build`, binary files, anything that is not a regular file, and anything over 2 MB. Unchanged files are skipped via a cheap hash check — unless a different model or fastembed version embedded them, then they are re-embedded; deleted (or no-longer-readable) files are purged from the index. |
 | 🔍 **`search_notes(query, top_k=5, path_prefix=None)`** | Natural-language semantic search. Returns `file:line-range` + snippet + distance score — not just a bag of filenames. `path_prefix` scopes the search to one subtree. `top_k` is 1–50. |
 | 💡 **`ask_notes(question, top_k=5, path_prefix=None)`** | *Optional.* Same retrieval as `search_notes`, then an LLM (Groq → Mistral fallback) answers using **only** those chunks, followed by a `file:line` source list. Needs `GROQ_API_KEY` or `MISTRAL_API_KEY`. With neither key set — or if the provider chain fails — it degrades to returning the raw matches with a note. It never hard-fails just because synthesis wasn't possible. |
-| 📋 **`list_indexed_files(path_prefix=None)`** | What's in the index right now: path, chunk count, last-indexed timestamp (first 200 files, with a count of the rest). Useful before searching, or to debug a stale result. |
+| 📋 **`list_indexed_files(path_prefix=None)`** | What's in the index right now: path, chunk count, last-indexed timestamp (first 200 files, with a count of the rest), and a marker on files embedded by another model/fastembed version. Useful before searching, or to debug a stale result. |
 | 🧹 **`remove_directory(path)`** | Drops everything under `path` from the index. **Does not delete your files** — it only cleans the index. |
 
 > 🔒 **`index_directory`, `search_notes`, `list_indexed_files` and `remove_directory`
@@ -135,11 +139,26 @@ flowchart LR
 
 ## 🚀 Quickstart
 
+Needs [uv](https://docs.astral.sh/uv/) and Python 3.10–3.13.
+
 ```bash
 git clone https://github.com/Furkiozknn/local-notes-search-mcp.git
 cd local-notes-search-mcp
 uv sync
 ```
+
+Try it before wiring up a client — index this repository into a throwaway
+index and ask it something (the first run downloads the model, see below):
+
+```bash
+LOCAL_NOTES_SEARCH_DB=/tmp/lns-try.db uv run python -c "
+import asyncio, local_notes_search as l
+print(asyncio.run(l.index_directory('.')))
+print(asyncio.run(l.search_notes('which files are never indexed', top_k=2)))"
+```
+
+If the model cannot be downloaded, that prints an error naming the fix
+(network access, or `--download-model` + `LOCAL_NOTES_SEARCH_OFFLINE`).
 
 <details>
 <summary><b>🔌 Wire it into an MCP client (Claude Code, Claude Desktop, …)</b></summary>
@@ -232,12 +251,15 @@ Matching is case-insensitive. It is a **name** denylist, not a secret scanner:
 it stops the obvious cases (`credentials.json` would otherwise sail through the
 default `.json` extension filter), not a key pasted into a `.md` file.
 
-**3. Hidden directories are not walked (always on).** `.ssh`, `.aws`,
-`.gnupg`, `.docker` (whose `config.json` holds registry auth), `.config`
-(where `gh` keeps an OAuth token in `hosts.yml`) — pointing `index_directory`
+**3. Hidden files and directories are not walked (always on).** `.ssh`,
+`.aws`, `.gnupg`, `.docker` (whose `config.json` holds registry auth),
+`.config` (where `gh` keeps an OAuth token in `hosts.yml`), `~/.claude.json`
+(MCP server configs, API keys in `env` included) — pointing `index_directory`
 at a home directory must not sweep those in through the `.json` / `.yml`
 filters. A hidden directory you *do* want indexed can be passed as `path`
-itself.
+itself. Only regular files are read: a FIFO or device named `*.md` is skipped
+(a FIFO used to hang the whole call), and a file is never read past 2 MB even
+if it grew after the walk.
 
 **4. Symlinks cannot leave the root (always on).** A symlinked file is indexed
 only if it resolves to a regular file inside the directory being indexed, not
@@ -255,6 +277,15 @@ inside a `0700` `~/.local-notes-search/`; an index created by an older version
 is tightened the next time it is opened). Delete it — or use
 `remove_directory` — and the copy is gone; your original files are never
 modified.
+
+Every indexed file also records **which embedder produced its vectors**: the
+model name *and* the fastembed version. That matters because fastembed 0.6.0
+changed this model's pooling (CLS → mean), so vectors from before and after
+are not comparable. After an upgrade, `search_notes` / `ask_notes` start with
+a warning that says how many files are stale, `list_indexed_files` marks them,
+and the next `index_directory` on those folders re-embeds them even though
+their content did not change. An index created before this was recorded is
+treated the same way.
 
 </details>
 
@@ -278,7 +309,7 @@ modified.
 uv run pytest -v
 ```
 
-**91 tests, on a deliberate two-tier strategy.** Pure-logic tests (chunking,
+**99 tests, on a deliberate two-tier strategy.** Pure-logic tests (chunking,
 hashing, file walking, `ask_notes`' provider-chain and degradation paths)
 always run — no model, no network, no API key. Tests that need the real
 fastembed model or the sqlite-vec extension **skip honestly** when those can't
@@ -289,8 +320,8 @@ What that means in practice, reported exactly as measured:
 
 | Environment | Result |
 |---|---|
-| ✅ CI (model cached, and *required*: a missing model fails the job instead of skipping) | **91 passed** — measured 25 September 2026 — including the real end-to-end flow — the fastembed model really loaded, the sqlite-vec extension really ran, and a *"how do I bake a cake"* query really retrieved the relevant file while excluding the irrelevant one. |
-| ⚠️ A sandbox with the model download blocked | **77 passed, 14 skipped** — measured 25 September 2026. Every model-free test green, and the model-backed ones skipped with an explicit reason instead of a false pass. |
+| ✅ CI (model cached, and *required*: a missing model fails the job instead of skipping; Python 3.10, 3.11, 3.12 and 3.13) | **99 passed** — including the real end-to-end flow — the fastembed model really loaded, the sqlite-vec extension really ran, and a *"how do I cook pasta"* query really retrieved the recipe note and not the car-maintenance one. |
+| ⚠️ A sandbox with the model download blocked | **85 passed, 14 skipped** — measured 25 September 2026. Every model-free test green, and the model-backed ones skipped with an explicit reason instead of a false pass. |
 
 The second row is the honest cost of the first: this suite tells you when it
 *couldn't* verify something.
@@ -305,7 +336,7 @@ what it runs. Answering that means reading the source, and most people will not.
 
 On every push, [mcp-vet](https://github.com/Furkiozknn/mcp-vet) from the same
 account audits this server from source and writes the whole report into the job
-summary. Today's verdict: **NOT_FLAGGED** (no finding sets the verdict). The gate closes at HIGH and
+summary, verdict included. The gate closes at HIGH and
 above — and it also closes if the tool itself could not run, because "I could not
 look" should not read as green.
 
@@ -337,6 +368,10 @@ you shouldn't trust.
   a single MCP client session.
 
 ---
+
+## 📓 Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
 
 ## 📜 License
 

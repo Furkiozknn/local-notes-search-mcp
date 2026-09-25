@@ -53,6 +53,10 @@ eşleşmesine göre değil.
      ...auth konusunu billing migration bittikten sonra tekrar açacağız.
 ```
 
+<sub>Temsilî ve kısaltılmış. Gerçek ilk satır şöyle: `… indexlendi: 128 dosya
+(yeni/değişmiş), 12 değişmemiş dosya atlandı, 941 yeni chunk, 0 silinmiş dosya
+temizlendi.`</sub>
+
 Bu akışın hiçbir adımı ağa çıkmadı. OpenAI anahtarı yok, Pinecone hesabı yok,
 Docker konteyneri yok, kendi notlarınızda arama yapmak için önce
 `docker compose up` yazmanız gerekmiyor.
@@ -86,8 +90,8 @@ sentezler; hiçbiri yoksa hata vermeden ham eşleşmeleri döner.
 flowchart LR
     subgraph INDEX["📥 Index hattı — siz istediğinizde çalışır"]
         direction LR
-        A["📁 Yerel klasör"] --> B["🚶 Tara + filtrele<br/>.git, node_modules,<br/>.venv, &gt; 2MB atlanır"]
-        B --> H{"🔐 İçerik hash'i<br/>değişti mi?"}
+        A["📁 Yerel klasör"] --> B["🚶 Tara + filtrele<br/>gizli, node_modules,<br/>.venv, &gt; 2MB atlanır"]
+        B --> H{"🔐 İçerik hash'i ya da<br/>gömücü değişti mi?"}
         H -- "hayır" --> SKIP["⏭️ Atla<br/>sıfır CPU"]
         H -- "evet" --> C["✂️ Satır bazlı chunker<br/>1500 karakter + 200 overlap<br/>satırı asla bölmez"]
         C --> D["🧠 fastembed ONNX<br/>paraphrase-multilingual-MiniLM-L12-v2 · 384-d"]
@@ -119,10 +123,10 @@ flowchart LR
 
 | 🛠️ Araç | Ne yapar |
 |---|---|
-| 🗂️ **`index_directory(path, extensions=None)`** | Bir dizini recursive indexler. Gizli dizinler (`.git`, `.ssh`, `.config`, …), `node_modules` / `venv` / `__pycache__` / `dist` / `build`, ikili dosyalar ve 2 MB üzeri dosyalar atlanır. Değişmemiş dosyalar ucuz bir hash kontrolüyle atlanır; silinmiş (ya da artık okunamayan) dosyalar index'ten temizlenir. |
+| 🗂️ **`index_directory(path, extensions=None)`** | Bir dizini recursive indexler. Gizli dosya ve dizinler (`.git`, `.ssh`, `.config`, `.claude.json`, …), `node_modules` / `venv` / `__pycache__` / `dist` / `build`, ikili dosyalar, normal dosya olmayan her şey ve 2 MB üzeri dosyalar atlanır. Değişmemiş dosyalar ucuz bir hash kontrolüyle atlanır — başka bir model ya da fastembed sürümüyle embed edilmişlerse yeniden embed edilir; silinmiş (ya da artık okunamayan) dosyalar index'ten temizlenir. |
 | 🔍 **`search_notes(query, top_k=5, path_prefix=None)`** | Doğal dilde anlamsal arama. `dosya:satır-aralığı` + snippet + mesafe skoru döner — sadece bir dosya adı yığını değil. `path_prefix` aramayı tek bir alt ağaca daraltır. `top_k` 1–50 arası. |
 | 💡 **`ask_notes(question, top_k=5, path_prefix=None)`** | *Opsiyonel.* `search_notes` ile aynı retrieval, ardından bir LLM (Groq → Mistral fallback) **sadece** o parçaları kullanarak cevap üretir ve altına `dosya:satır` kaynak listesi ekler. `GROQ_API_KEY` ya da `MISTRAL_API_KEY` gerekir. İkisi de yoksa — ya da sağlayıcı zinciri başarısız olursa — ham eşleşmeleri bir notla döner. Sentez mümkün olmadı diye asla sert bir hata vermez. |
-| 📋 **`list_indexed_files(path_prefix=None)`** | Şu an index'te ne var: yol, chunk sayısı, son indexlenme zamanı (ilk 200 dosya, kalanların sayısıyla). Aramadan önce kapsamı görmek ya da bayat bir sonucu debug etmek için. |
+| 📋 **`list_indexed_files(path_prefix=None)`** | Şu an index'te ne var: yol, chunk sayısı, son indexlenme zamanı (ilk 200 dosya, kalanların sayısıyla); başka bir model/fastembed sürümüyle embed edilmiş dosyalar işaretlenir. Aramadan önce kapsamı görmek ya da bayat bir sonucu debug etmek için. |
 | 🧹 **`remove_directory(path)`** | `path` altındaki her şeyi index'ten düşürür. **Dosyalarınızı silmez** — sadece index'i temizler. |
 
 > 🔒 **`index_directory`, `search_notes`, `list_indexed_files` ve `remove_directory`
@@ -136,11 +140,26 @@ flowchart LR
 
 ## 🚀 Hızlı başlangıç
 
+[uv](https://docs.astral.sh/uv/) ve Python 3.10–3.13 gerekir.
+
 ```bash
 git clone https://github.com/Furkiozknn/local-notes-search-mcp.git
 cd local-notes-search-mcp
 uv sync
 ```
+
+Bir istemciye bağlamadan önce deneyin — bu depoyu geçici bir index'e alıp bir
+soru sorun (ilk çalıştırma modeli indirir, aşağıya bakın):
+
+```bash
+LOCAL_NOTES_SEARCH_DB=/tmp/lns-try.db uv run python -c "
+import asyncio, local_notes_search as l
+print(asyncio.run(l.index_directory('.')))
+print(asyncio.run(l.search_notes('which files are never indexed', top_k=2)))"
+```
+
+Model indirilemezse çıktı, çözümü söyleyen bir hatadır (ağ erişimi ya da
+`--download-model` + `LOCAL_NOTES_SEARCH_OFFLINE`).
 
 <details>
 <summary><b>🔌 MCP istemcinize bağlayın (Claude Code, Claude Desktop, …)</b></summary>
@@ -237,11 +256,15 @@ bilgi tarayıcısı değil: bariz durumları engeller (`credentials.json` aksi h
 varsayılan `.json` uzantı filtresinden geçerdi), bir `.md` dosyasına
 yapıştırılmış anahtarı değil.
 
-**3. Gizli dizinler taranmaz (her zaman açık).** `.ssh`, `.aws`, `.gnupg`,
-`.docker` (`config.json` registry kimlik bilgisini tutar), `.config` (`gh`
-OAuth jetonunu `hosts.yml`'de saklar) — `index_directory`'yi ev dizinine
-yöneltmek bunları `.json` / `.yml` filtresinden içeri almamalı. Gerçekten
-indexlemek istediğiniz gizli bir dizini doğrudan `path` olarak verebilirsiniz.
+**3. Gizli dosya ve dizinler taranmaz (her zaman açık).** `.ssh`, `.aws`,
+`.gnupg`, `.docker` (`config.json` registry kimlik bilgisini tutar), `.config`
+(`gh` OAuth jetonunu `hosts.yml`'de saklar), `~/.claude.json` (MCP sunucu
+ayarları, `env` içindeki API anahtarları dahil) — `index_directory`'yi ev
+dizinine yöneltmek bunları `.json` / `.yml` filtresinden içeri almamalı.
+Gerçekten indexlemek istediğiniz gizli bir dizini doğrudan `path` olarak
+verebilirsiniz. Yalnızca normal dosyalar okunur: `*.md` adlı bir FIFO ya da
+aygıt dosyası atlanır (FIFO eskiden tüm çağrıyı kilitliyordu) ve bir dosya,
+taramadan sonra büyümüş olsa bile 2 MB'tan fazla okunmaz.
 
 **4. Sembolik bağlantılar kökten çıkamaz (her zaman açık).** Sembolik bağlantı
 olan bir dosya, yalnızca indexlenen dizinin içinde, atlanan bir dizinde olmayan
@@ -259,6 +282,15 @@ değil, notlarınızın bir kopyasıdır. Linux/macOS'ta yalnızca sahibi okuyab
 bir sürümün oluşturduğu index bir sonraki açılışta sıkılaştırılır). Dosyayı
 silin — ya da `remove_directory` kullanın — kopya gider; asıl dosyalarınıza
 hiçbir zaman dokunulmaz.
+
+Her indexlenen dosya, vektörlerini **hangi gömücünün ürettiğini** de kaydeder:
+model adı *ve* fastembed sürümü. Bu önemli, çünkü fastembed 0.6.0 bu modelin
+pooling'ini değiştirdi (CLS → mean); öncesi ve sonrasının vektörleri
+karşılaştırılamaz. Bir yükseltmeden sonra `search_notes` / `ask_notes` kaç
+dosyanın bayat olduğunu söyleyen bir uyarıyla başlar, `list_indexed_files`
+bunları işaretler ve o klasörlerde bir sonraki `index_directory`, içerikleri
+değişmemiş olsa da onları yeniden embed eder. Bu kayıttan önce oluşturulmuş
+bir index de aynı şekilde ele alınır.
 
 </details>
 
@@ -282,7 +314,7 @@ hiçbir zaman dokunulmaz.
 uv run pytest -v
 ```
 
-**91 test, bilinçli iki katmanlı bir strateji üzerine.** Saf mantık testleri
+**99 test, bilinçli iki katmanlı bir strateji üzerine.** Saf mantık testleri
 (chunking, hash, dosya tarama, `ask_notes`'un sağlayıcı zinciri ve
 degradasyon yolları) her zaman çalışır — model yok, ağ yok, API anahtarı yok.
 Gerçek fastembed modelini veya sqlite-vec eklentisini gerektiren testler,
@@ -293,8 +325,8 @@ Pratikte ne anlama geldiği, ölçüldüğü gibi:
 
 | Ortam | Sonuç |
 |---|---|
-| ✅ CI (model önbellekte ve *zorunlu*: model yoksa testler skip olmaz, iş kırmızı yanar) | **91 geçti** — 25 Eylül 2026'da ölçüldü — gerçek uçtan uca akış dahil — fastembed modeli gerçekten yüklendi, sqlite-vec eklentisi gerçekten çalıştı ve *"pasta nasıl pişirilir"* araması gerçekten alakalı dosyayı bulup alakasız dosyayı hariç tuttu. |
-| ⚠️ Model indirmesi engellenmiş bir sandbox | **77 geçti, 14 skip** — 25 Eylül 2026'da ölçüldü. Modele ihtiyaç duymayan her test yeşil; modele dayananlar ise sahte bir geçiş yerine açık bir gerekçeyle skip edildi. |
+| ✅ CI (model önbellekte ve *zorunlu*: model yoksa testler skip olmaz, iş kırmızı yanar; Python 3.10, 3.11, 3.12 ve 3.13) | **99 geçti** — gerçek uçtan uca akış dahil — fastembed modeli gerçekten yüklendi, sqlite-vec eklentisi gerçekten çalıştı ve *"how do I cook pasta"* sorgusu gerçekten tarif notunu buldu, araba bakımı notunu değil. |
+| ⚠️ Model indirmesi engellenmiş bir sandbox | **85 geçti, 14 skip** — 25 Eylül 2026'da ölçüldü. Modele ihtiyaç duymayan her test yeşil; modele dayananlar ise sahte bir geçiş yerine açık bir gerekçeyle skip edildi. |
 
 İkinci satır, birincinin dürüst bedeli: bu suite, bir şeyi *doğrulayamadığında*
 size bunu söylüyor.
@@ -322,6 +354,10 @@ bir README'dir.
   bir MCP istemci oturumu etrafında tasarlandı.
 
 ---
+
+## 📓 Değişiklik günlüğü
+
+[CHANGELOG.md](CHANGELOG.md) (İngilizce).
 
 ## 📜 Lisans
 

@@ -23,7 +23,21 @@ jobs:
       - name: Install dependencies
         run: uv sync --group dev
 
+      # Modeli her kosuda Hugging Face'ten yeniden indirmek yerine onbellekten
+      # al. Anahtar model adini tasiyor: LOCAL_NOTES_SEARCH_MODEL varsayilani
+      # degisirse onbellek kendiliginden yenilenir.
+      - name: Embedding modeli onbellegi
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/lns-model
+          key: lns-model-paraphrase-multilingual-MiniLM-L12-v2-v1
+
+      # LOCAL_NOTES_SEARCH_REQUIRE_MODEL=1: model yuklenemezse 14 model testi
+      # sessizce "skipped" olup is yesil kalmasin, is kirmizi yansin.
       - name: Run tests
+        env:
+          LOCAL_NOTES_SEARCH_MODEL_DIR: ~/.cache/lns-model
+          LOCAL_NOTES_SEARCH_REQUIRE_MODEL: "1"
         run: uv run pytest -v
 
   # `yayinla.yml` yalniz `v*` etiketinde kosuyor, yani paketleme bozulursa

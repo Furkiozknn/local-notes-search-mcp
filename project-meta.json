@@ -51,9 +51,9 @@
     "videos": []
   },
   "tests": {
-    "count": 64,
-    "source": "`64 passed, 1 warning`",
-    "measured": "2026-09-22"
+    "count": 91,
+    "source": "`91 passed, 2 warnings` (CI, model required)",
+    "measured": "2026-09-25"
   },
   "ci": {
     "workflows": [

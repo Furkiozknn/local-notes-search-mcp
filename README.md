@@ -289,8 +289,8 @@ What that means in practice, reported exactly as measured:
 
 | Environment | Result |
 |---|---|
-| ✅ Development environment (fastembed model downloadable) | **64 tests**, including the real end-to-end flow — the fastembed model really loaded, the sqlite-vec extension really ran, and a *"how do I bake a cake"* query really retrieved the relevant file while excluding the irrelevant one. |
-| ⚠️ A sandbox with the model download blocked | **50 passed, 14 skipped** — measured 15 September 2026. Every model-free test green, and the model-backed ones skipped with an explicit reason instead of a false pass. |
+| ✅ CI (model cached, and *required*: a missing model fails the job instead of skipping) | **91 passed** — measured 25 September 2026 — including the real end-to-end flow — the fastembed model really loaded, the sqlite-vec extension really ran, and a *"how do I bake a cake"* query really retrieved the relevant file while excluding the irrelevant one. |
+| ⚠️ A sandbox with the model download blocked | **77 passed, 14 skipped** — measured 25 September 2026. Every model-free test green, and the model-backed ones skipped with an explicit reason instead of a false pass. |
 
 The second row is the honest cost of the first: this suite tells you when it
 *couldn't* verify something.

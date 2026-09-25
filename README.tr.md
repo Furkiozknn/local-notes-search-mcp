@@ -11,7 +11,7 @@
 <br/>
 
 [![CI](https://github.com/Furkiozknn/local-notes-search-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Furkiozknn/local-notes-search-mcp/actions/workflows/ci.yml)
-[![Testler](https://img.shields.io/badge/testler-37-3fb950?logo=pytest&logoColor=white)](tests/)
+[![Testler](https://img.shields.io/badge/testler-99-3fb950?logo=pytest&logoColor=white)](tests/)
 [![Lisans: MIT](https://img.shields.io/badge/lisans-MIT-8957e5)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776ab?logo=python&logoColor=white)](.python-version)
 [![MCP](https://img.shields.io/badge/MCP-sunucu-000000?logo=anthropic&logoColor=white)](https://modelcontextprotocol.io)

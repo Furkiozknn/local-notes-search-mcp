@@ -118,16 +118,18 @@ flowchart LR
 
 | 🛠️ Tool | What it does |
 |---|---|
-| 🗂️ **`index_directory(path, extensions=None)`** | Recursively indexes a directory. Skips `.git` / `node_modules` / `.venv` / `__pycache__` / `dist` / `build` and anything over 2 MB. Unchanged files are skipped via a cheap hash check; deleted files are purged from the index. |
-| 🔍 **`search_notes(query, top_k=5, path_prefix=None)`** | Natural-language semantic search. Returns `file:line-range` + snippet + distance score — not just a bag of filenames. `path_prefix` scopes the search to one subtree. |
+| 🗂️ **`index_directory(path, extensions=None)`** | Recursively indexes a directory. Skips hidden directories (`.git`, `.ssh`, `.config`, …), `node_modules` / `venv` / `__pycache__` / `dist` / `build`, binary files and anything over 2 MB. Unchanged files are skipped via a cheap hash check; deleted (or no-longer-readable) files are purged from the index. |
+| 🔍 **`search_notes(query, top_k=5, path_prefix=None)`** | Natural-language semantic search. Returns `file:line-range` + snippet + distance score — not just a bag of filenames. `path_prefix` scopes the search to one subtree. `top_k` is 1–50. |
 | 💡 **`ask_notes(question, top_k=5, path_prefix=None)`** | *Optional.* Same retrieval as `search_notes`, then an LLM (Groq → Mistral fallback) answers using **only** those chunks, followed by a `file:line` source list. Needs `GROQ_API_KEY` or `MISTRAL_API_KEY`. With neither key set — or if the provider chain fails — it degrades to returning the raw matches with a note. It never hard-fails just because synthesis wasn't possible. |
-| 📋 **`list_indexed_files(path_prefix=None)`** | What's in the index right now: path, chunk count, last-indexed timestamp. Useful before searching, or to debug a stale result. |
+| 📋 **`list_indexed_files(path_prefix=None)`** | What's in the index right now: path, chunk count, last-indexed timestamp (first 200 files, with a count of the rest). Useful before searching, or to debug a stale result. |
 | 🧹 **`remove_directory(path)`** | Drops everything under `path` from the index. **Does not delete your files** — it only cleans the index. |
 
 > 🔒 **`index_directory`, `search_notes`, `list_indexed_files` and `remove_directory`
-> require no API key and make no network calls at all.** `ask_notes` is the one
-> tool that can talk to a remote provider, and only when you explicitly give it
-> a key.
+> require no API key and send nothing anywhere.** The one network call they can
+> make is the one-time embedding-model download described under Quickstart —
+> set `LOCAL_NOTES_SEARCH_OFFLINE=1` to rule even that out. `ask_notes` is the
+> one tool that can talk to a remote provider, and only when you explicitly
+> give it a key.
 
 ---
 
@@ -160,9 +162,19 @@ Register `local_notes_search.py` as a **stdio** MCP server:
 }
 ```
 
-On the **first** `index_directory` / `search_notes` call, the fastembed model
-(~130 MB) is downloaded once and cached locally. Every call after that is fully
-offline.
+**The model download, stated plainly.** The embedding model is not bundled.
+Unless it is already cached, the first `index_directory` / `search_notes` call
+downloads it from Hugging Face (fastembed lists it at 0.22 GB) into
+`~/.local-notes-search/models`, and every call after that is offline. To make
+that download an explicit step instead of a side effect:
+
+```bash
+uv run local-notes-search-mcp --download-model   # once, with network
+export LOCAL_NOTES_SEARCH_OFFLINE=1              # from now on: never download
+```
+
+With `LOCAL_NOTES_SEARCH_OFFLINE=1` and no cached model, a tool call fails with
+an error that says exactly this, instead of reaching for the network.
 
 </details>
 
@@ -174,6 +186,9 @@ offline.
 | Env var | Default | What it does |
 |---|---|---|
 | `LOCAL_NOTES_SEARCH_DB` | `~/.local-notes-search/index.db` | Where the index lives. **One single file for every indexed directory** — so a single `search_notes` call can span all your project folders at once. |
+| `LOCAL_NOTES_SEARCH_MODEL` | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` | Embedding model (any fastembed-supported name). An index built with another model is refused, not silently compared. |
+| `LOCAL_NOTES_SEARCH_MODEL_DIR` | `~/.local-notes-search/models` | Model cache. Falls back to `FASTEMBED_CACHE_PATH` if that is set. (fastembed's own default is the system temp directory, which is wiped on reboot — hence a download again later.) |
+| `LOCAL_NOTES_SEARCH_OFFLINE` | *unset* | `1` forbids any model download; the model must already be cached (`--download-model`). |
 | `LOCAL_NOTES_SEARCH_ALLOWED_ROOTS` | *unset* | Optional allowlist. When set, `index_directory` refuses any path that does not resolve inside one of these directories. `os.pathsep`-separated (`:` on Linux/macOS, `;` on Windows). |
 | `GROQ_API_KEY` | *unset* | Optional. Enables `ask_notes` synthesis via Groq (first in the provider chain). |
 | `MISTRAL_API_KEY` | *unset* | Optional. Fallback provider for `ask_notes` when Groq is unset or fails. |
@@ -189,7 +204,7 @@ Default indexed extensions: `.md` `.txt` `.py` `.js` `.ts` `.tsx` `.jsx` `.json`
 `index_directory` reads whatever it is pointed at, and `ask_notes` sends the
 chunks it retrieves to a **third-party LLM** (Groq or Mistral) when a key is
 configured. So an indexed path is a path whose contents can leave the machine.
-Two guards exist:
+These guards exist:
 
 **1. `LOCAL_NOTES_SEARCH_ALLOWED_ROOTS` (opt-in).** Unset by default — that is
 the historical behaviour, any directory the running user can read is
@@ -209,11 +224,37 @@ quietly switch the allowlist off.
 whatever the allowlist or the `extensions=[...]` argument says:
 
 `.env` · `.env.*` · `.netrc` · `_netrc` · `id_rsa` · `id_dsa` · `id_ecdsa` ·
-`id_ed25519` · `credentials.json` · `*.pem`
+`id_ed25519` · `credentials.json` · `secrets.json` · `service-account*.json` ·
+`.npmrc` · `.pypirc` · `.git-credentials` · `*.pem` · `*.key` · `*.p12` ·
+`*.pfx` · `*.ppk`
 
 Matching is case-insensitive. It is a **name** denylist, not a secret scanner:
 it stops the obvious cases (`credentials.json` would otherwise sail through the
 default `.json` extension filter), not a key pasted into a `.md` file.
+
+**3. Hidden directories are not walked (always on).** `.ssh`, `.aws`,
+`.gnupg`, `.docker` (whose `config.json` holds registry auth), `.config`
+(where `gh` keeps an OAuth token in `hosts.yml`) — pointing `index_directory`
+at a home directory must not sweep those in through the `.json` / `.yml`
+filters. A hidden directory you *do* want indexed can be passed as `path`
+itself.
+
+**4. Symlinks cannot leave the root (always on).** A symlinked file is indexed
+only if it resolves to a regular file inside the directory being indexed, not
+inside a skipped directory, and not to a denylisted name — so
+`notes/todo.md → ~/.aws/credentials` is skipped instead of being read under an
+innocent name, past both the denylist and the allowlist. Directory symlinks are
+never followed.
+
+### 🗄️ What the index stores
+
+The index file holds, for every indexed chunk, its **full text in plain
+text**, its path and line range, and its vector. It is a copy of your notes,
+not just pointers to them. On Linux/macOS it is created owner-only (`0600`,
+inside a `0700` `~/.local-notes-search/`; an index created by an older version
+is tightened the next time it is opened). Delete it — or use
+`remove_directory` — and the copy is gone; your original files are never
+modified.
 
 </details>
 
@@ -274,7 +315,7 @@ runs stays right by default.
 
 ## ⚠️ Known limitations
 
-<img src="assets/limits.svg" alt="What never leaves the machine - walking, hashing, chunking, embedding and the whole vector search path, with unchanged files skipped by content hash and results carrying file, line and distance - against what is opt-in or honestly unfinished: ask_notes needs an API key and is grounded only in retrieved chunks, an overridden asymmetric model gets no query prefix, CI re-downloads the model each run, and SQLite is a single writer." width="100%">
+<img src="assets/limits.svg" alt="What never leaves the machine - walking, hashing, chunking, embedding and the whole vector search path, with unchanged files skipped by content hash and results carrying file, line and distance - against what is opt-in or honestly unfinished: ask_notes needs an API key and is grounded only in retrieved chunks, an overridden asymmetric model gets no query prefix, path_prefix filters after the vector search rather than inside it, and SQLite is a single writer." width="100%">
 
 Written down on purpose, because a README that claims no weaknesses is a README
 you shouldn't trust.
@@ -287,9 +328,10 @@ you shouldn't trust.
   simplification is now simply the correct usage. If you override
   `LOCAL_NOTES_SEARCH_MODEL` with an asymmetric model (BGE/E5 family),
   know that its prefix convention is still not applied.
-- **CI re-downloads the fastembed model on every run** (no `actions/cache`
-  configured). Acceptable for a small project; easy to speed up later. Low
-  priority, and honestly labelled as not done.
+- **`path_prefix` filters after the vector search, not inside it.** The
+  search over-fetches `4 × top_k` nearest chunks from the whole index and then
+  keeps those under the prefix, so a narrow prefix in a large index can return
+  fewer than `top_k` results even when more matching chunks exist.
 - **Single-writer SQLite.** Concurrent `index_directory` / `search_notes` calls
   from *separate processes* can collide on writes. The tool is designed around
   a single MCP client session.

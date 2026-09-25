@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 492" width="1200" height="492" role="img" aria-label="What never leaves the machine - walking, hashing, chunking, embedding and the whole vector search path, with unchanged files skipped by content hash and results carrying file, line and distance - against what is opt-in or honestly unfinished: ask_notes needs an API key and is grounded only in retrieved chunks, an overridden asymmetric model gets no query prefix, CI re-downloads the model each run, and SQLite is a single writer.">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 492" width="1200" height="492" role="img" aria-label="What never leaves the machine - walking, hashing, chunking, embedding and the whole vector search path, with unchanged files skipped by content hash and results carrying file, line and distance - against what is opt-in or honestly unfinished: ask_notes needs an API key and is grounded only in retrieved chunks, an overridden asymmetric model gets no query prefix, path_prefix filters after the vector search rather than inside it, and SQLite is a single writer.">
   <defs>
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
       <stop offset="0%" stop-color="#0d1117"/>
@@ -41,7 +41,7 @@
     <text x="656" y="258" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#e6edf3">Override the model with a BGE or E5 family one and</text>
     <text x="656" y="288" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#8b98a9">its query-prefix convention is not applied</text>
     <circle cx="640" cy="313" r="3.5" fill="#f0b429"/>
-    <text x="656" y="318" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#e6edf3">CI re-downloads the model each run: no actions/cache</text>
+    <text x="656" y="318" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#e6edf3">path_prefix filters after the vector search, not in it</text>
     <circle cx="640" cy="343" r="3.5" fill="#f0b429"/>
     <text x="656" y="348" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#e6edf3">Single-writer SQLite - separate processes can collide</text>
     <rect x="40" y="404" width="270" height="52" rx="12" fill="#131a26" stroke="#26324a" stroke-width="1.4"/>

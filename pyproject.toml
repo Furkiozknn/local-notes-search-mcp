@@ -33,8 +33,15 @@ requires-python = ">=3.10"
 dependencies = [
     "mcp[cli]>=2.1,<3",
     "sqlite-vec>=0.1.6",
-    "fastembed>=0.4.0",
-    "litellm>=1.97.0",
+    # 0.6.0 is where the default model got mean pooling, the pooling its own
+    # sentence-transformers config specifies; 0.4-0.5 used CLS pooling, whose
+    # vectors are not comparable with 0.6+ ones (see embedder_id()).
+    "fastembed>=0.6.0",
+    "pydantic>=2",
+    # 1.98.0-1.100.x import typing.NotRequired, which Python 3.10 does not
+    # have: on 3.10 `import litellm` failed and ask_notes silently degraded to
+    # raw chunks. 1.101.0 is the first release that imports on 3.10 again.
+    "litellm>=1.101.0",
 ]
 
 [dependency-groups]

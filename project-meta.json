@@ -37,7 +37,7 @@
     "semantic-search",
     "sqlite-vec"
   ],
-  "summary": "Ask your own files a question in plain language instead of guessing the keyword you typed six months ago. Semantic search as an MCP server: sqlite-vec + a multilingual ONNX model, incremental re-indexing, answers returned as file:line. No server, no API key, no network at query time. Grounded LLM Q&A is opt-in. 50 tests.",
+  "summary": "Ask your own files a question in plain language instead of guessing the keyword you typed six months ago. Semantic search as an MCP server: sqlite-vec + a multilingual ONNX model, incremental re-indexing, answers returned as file:line. No server, no API key, no network at query time. Grounded LLM Q&A is opt-in. 99 tests.",
   "key_features": [
     "Ask your own files a question in plain language instead of guessing the keyword you typed six months ago",
     "Semantic search as an MCP server: sqlite-vec plus a multilingual ONNX model, with incremental re-indexing",
@@ -51,9 +51,9 @@
     "videos": []
   },
   "tests": {
-    "count": 64,
-    "source": "`64 passed, 1 warning`",
-    "measured": "2026-09-22"
+    "count": 99,
+    "source": "`99 passed` (CI, model required, Python 3.10-3.13)",
+    "measured": "2026-09-25"
   },
   "ci": {
     "workflows": [
@@ -64,7 +64,7 @@
   },
   "docs": {
     "readme": "README.md",
-    "changelog": null,
+    "changelog": "CHANGELOG.md",
     "version_history": null,
     "roadmap": null,
     "security": "SECURITY.md",

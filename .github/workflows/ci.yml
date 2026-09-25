@@ -40,6 +40,41 @@ jobs:
           LOCAL_NOTES_SEARCH_REQUIRE_MODEL: "1"
         run: uv run pytest -v
 
+  # pyproject 3.10-3.13 diyor; `test` yalniz .python-version'u (3.12) kosuyor.
+  # Bu is olmadan 3.10'da `import litellm` kirildiginda (litellm 1.98-1.100
+  # typing.NotRequired kullaniyor) ask_notes sessizce ham sonuca dusuyordu ve
+  # hicbir kontrol bunu gormedi. Model burada da zorunlu: atlanan test yok.
+  surumler:
+    name: test (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install dependencies
+        run: uv sync --group dev --python ${{ matrix.python }}
+
+      - name: Dogru Python mu
+        run: uv run --python ${{ matrix.python }} python -c "import sys; v='%d.%d' % sys.version_info[:2]; assert v == '${{ matrix.python }}', v; print(v)"
+
+      - name: Embedding modeli onbellegi
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/lns-model
+          key: lns-model-paraphrase-multilingual-MiniLM-L12-v2-v1
+
+      - name: Run tests
+        env:
+          LOCAL_NOTES_SEARCH_MODEL_DIR: ~/.cache/lns-model
+          LOCAL_NOTES_SEARCH_REQUIRE_MODEL: "1"
+        run: uv run --python ${{ matrix.python }} pytest -q
+
   # `yayinla.yml` yalniz `v*` etiketinde kosuyor, yani paketleme bozulursa
   # bunu ancak yayinlamaya calistigin an ogrenirsin. Kardes depo mcp-vet'te
   # tam olarak bu oldu: 244 test yesilken `uv build` calismiyordu, cunku
@@ -85,6 +120,9 @@ jobs:
       # denetlemek, aracin da sunucunun da yanlis bulgusunu ortaya cikariyor:
       # bu is eklenirken mcp-vet'te gercek bir yanlis pozitif bulundu ve
       # duzeltildi (savunma amacli bir denylist, kimlik okumak sanilmisti).
+      # Bilerek sabitlenmemis: kendi aracimizin en son halini kendi
+      # sunucumuzda deniyoruz (mcp-vet'in etiketi yok). Is yalniz
+      # `contents: read` ile ve sirsiz kosuyor; kapi asagida cikis >= 2.
       - name: mcp-vet'i kur
         run: uv tool install git+https://github.com/Furkiozknn/mcp-vet
 

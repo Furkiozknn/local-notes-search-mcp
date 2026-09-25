@@ -11,7 +11,7 @@
 <br/>
 
 [![CI](https://github.com/Furkiozknn/local-notes-search-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Furkiozknn/local-notes-search-mcp/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-64-3fb950?logo=pytest&logoColor=white)](tests/)
+[![Tests](https://img.shields.io/badge/tests-91-3fb950?logo=pytest&logoColor=white)](tests/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-8957e5)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776ab?logo=python&logoColor=white)](.python-version)
 [![MCP](https://img.shields.io/badge/MCP-server-000000?logo=anthropic&logoColor=white)](https://modelcontextprotocol.io)
@@ -278,7 +278,7 @@ modified.
 uv run pytest -v
 ```
 
-**64 tests, on a deliberate two-tier strategy.** Pure-logic tests (chunking,
+**91 tests, on a deliberate two-tier strategy.** Pure-logic tests (chunking,
 hashing, file walking, `ask_notes`' provider-chain and degradation paths)
 always run — no model, no network, no API key. Tests that need the real
 fastembed model or the sqlite-vec extension **skip honestly** when those can't

@@ -282,7 +282,7 @@ hiçbir zaman dokunulmaz.
 uv run pytest -v
 ```
 
-**64 test, bilinçli iki katmanlı bir strateji üzerine.** Saf mantık testleri
+**91 test, bilinçli iki katmanlı bir strateji üzerine.** Saf mantık testleri
 (chunking, hash, dosya tarama, `ask_notes`'un sağlayıcı zinciri ve
 degradasyon yolları) her zaman çalışır — model yok, ağ yok, API anahtarı yok.
 Gerçek fastembed modelini veya sqlite-vec eklentisini gerektiren testler,

@@ -325,7 +325,7 @@ Pratikte ne anlama geldiği, ölçüldüğü gibi:
 
 | Ortam | Sonuç |
 |---|---|
-| ✅ CI (model önbellekte ve *zorunlu*: model yoksa testler skip olmaz, iş kırmızı yanar; Python 3.10, 3.11, 3.12 ve 3.13) | **99 geçti** — gerçek uçtan uca akış dahil — fastembed modeli gerçekten yüklendi, sqlite-vec eklentisi gerçekten çalıştı ve *"how do I cook pasta"* sorgusu gerçekten tarif notunu buldu, araba bakımı notunu değil. |
+| ✅ CI (model önbellekte ve *zorunlu*: model yoksa testler skip olmaz, iş kırmızı yanar; Python 3.10, 3.11, 3.12 ve 3.13) | **99 geçti**, dördünde de — 25 Eylül 2026'da ölçüldü — gerçek uçtan uca akış dahil — fastembed modeli gerçekten yüklendi, sqlite-vec eklentisi gerçekten çalıştı ve *"how do I cook pasta"* sorgusu gerçekten tarif notunu buldu, araba bakımı notunu değil. |
 | ⚠️ Model indirmesi engellenmiş bir sandbox | **85 geçti, 14 skip** — 25 Eylül 2026'da ölçüldü. Modele ihtiyaç duymayan her test yeşil; modele dayananlar ise sahte bir geçiş yerine açık bir gerekçeyle skip edildi. |
 
 İkinci satır, birincinin dürüst bedeli: bu suite, bir şeyi *doğrulayamadığında*

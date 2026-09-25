@@ -182,3 +182,37 @@ async def test_ask_notes_with_llm_returns_synthesized_answer_and_sources(tmp_not
     assert "Boil pasta for 9 minutes." in result
     assert "Kaynaklar:" in result
     assert "recipe.md" in result
+
+
+def test_redact_scrubs_every_configured_provider_key(monkeypatch):
+    """ask_notes logs whatever the provider chain raised - an API key must
+    never reach the log file through it."""
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_supersecret")
+    monkeypatch.setenv("MISTRAL_API_KEY", "mst_alsosecret")
+
+    redacted = lns._redact("auth failed for gsk_supersecret and mst_alsosecret")
+
+    assert "gsk_supersecret" not in redacted
+    assert "mst_alsosecret" not in redacted
+    assert redacted == "auth failed for *** and ***"
+
+
+def test_redact_is_a_noop_when_no_provider_key_is_configured():
+    assert lns._redact("connection refused") == "connection refused"
+
+
+@pytest.mark.asyncio
+async def test_synthesis_failure_is_logged_with_the_key_redacted(monkeypatch, caplog):
+    monkeypatch.setenv("GROQ_API_KEY", "gsk_supersecret")
+
+    async def _boom(**kwargs):
+        raise RuntimeError("401 Unauthorized: key gsk_supersecret rejected")
+
+    monkeypatch.setattr("litellm.acompletion", _boom)
+
+    with caplog.at_level("WARNING"):
+        result = await lns._synthesize_answer("question", [("f.md", 1, 2, "text", 0.1)])
+
+    assert result is None
+    assert "gsk_supersecret" not in caplog.text
+    assert "***" in caplog.text

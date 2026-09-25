@@ -1,0 +1,22 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Furkiozknn/local-notes-search-mcp",
+  "title": "Local Notes Search",
+  "description": "Semantic search over your own markdown and text files, entirely on this machine: no server, no API key, no network.",
+  "version": "0.1.0",
+  "repository": {
+    "url": "https://github.com/Furkiozknn/local-notes-search-mcp",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "local-notes-search-mcp",
+      "version": "0.1.0",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

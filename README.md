@@ -11,7 +11,7 @@
 <br/>
 
 [![CI](https://github.com/Furkiozknn/local-notes-search-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Furkiozknn/local-notes-search-mcp/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-37-3fb950?logo=pytest&logoColor=white)](tests/)
+[![Tests](https://img.shields.io/badge/tests-50-3fb950?logo=pytest&logoColor=white)](tests/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-8957e5)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776ab?logo=python&logoColor=white)](.python-version)
 [![MCP](https://img.shields.io/badge/MCP-server-000000?logo=anthropic&logoColor=white)](https://modelcontextprotocol.io)
@@ -174,6 +174,7 @@ offline.
 | Env var | Default | What it does |
 |---|---|---|
 | `LOCAL_NOTES_SEARCH_DB` | `~/.local-notes-search/index.db` | Where the index lives. **One single file for every indexed directory** — so a single `search_notes` call can span all your project folders at once. |
+| `LOCAL_NOTES_SEARCH_ALLOWED_ROOTS` | *unset* | Optional allowlist. When set, `index_directory` refuses any path that does not resolve inside one of these directories. `os.pathsep`-separated (`:` on Linux/macOS, `;` on Windows). |
 | `GROQ_API_KEY` | *unset* | Optional. Enables `ask_notes` synthesis via Groq (first in the provider chain). |
 | `MISTRAL_API_KEY` | *unset* | Optional. Fallback provider for `ask_notes` when Groq is unset or fails. |
 
@@ -182,6 +183,37 @@ them in the MCP client config file you check into git.**
 
 Default indexed extensions: `.md` `.txt` `.py` `.js` `.ts` `.tsx` `.jsx` `.json`
 `.yaml` `.yml` `.rst` `.toml` — override per call with `extensions=[...]`.
+
+### 🔒 What can be indexed
+
+`index_directory` reads whatever it is pointed at, and `ask_notes` sends the
+chunks it retrieves to a **third-party LLM** (Groq or Mistral) when a key is
+configured. So an indexed path is a path whose contents can leave the machine.
+Two guards exist:
+
+**1. `LOCAL_NOTES_SEARCH_ALLOWED_ROOTS` (opt-in).** Unset by default — that is
+the historical behaviour, any directory the running user can read is
+indexable, and this project does not pretend an empty default is a sandbox.
+Set it and `index_directory` refuses anything outside:
+
+```bash
+export LOCAL_NOTES_SEARCH_ALLOWED_ROOTS="$HOME/notes:$HOME/projects"
+```
+
+Paths are resolved (`..` collapsed, symlinks followed) before the check, and a
+subdirectory of an allowed root is allowed. A configured entry that is not a
+directory is an error rather than being silently dropped — a typo must not
+quietly switch the allowlist off.
+
+**2. A credential-filename denylist (always on).** These are never indexed,
+whatever the allowlist or the `extensions=[...]` argument says:
+
+`.env` · `.env.*` · `.netrc` · `_netrc` · `id_rsa` · `id_dsa` · `id_ecdsa` ·
+`id_ed25519` · `credentials.json` · `*.pem`
+
+Matching is case-insensitive. It is a **name** denylist, not a secret scanner:
+it stops the obvious cases (`credentials.json` would otherwise sail through the
+default `.json` extension filter), not a key pasted into a `.md` file.
 
 </details>
 
@@ -205,7 +237,7 @@ Default indexed extensions: `.md` `.txt` `.py` `.js` `.ts` `.tsx` `.jsx` `.json`
 uv run pytest -v
 ```
 
-**38 tests, on a deliberate two-tier strategy.** Pure-logic tests (chunking,
+**50 tests, on a deliberate two-tier strategy.** Pure-logic tests (chunking,
 hashing, file walking, `ask_notes`' provider-chain and degradation paths)
 always run — no model, no network, no API key. Tests that need the real
 fastembed model or the sqlite-vec extension **skip honestly** when those can't
@@ -216,13 +248,29 @@ What that means in practice, reported exactly as measured:
 
 | Environment | Result |
 |---|---|
-| ✅ Development environment (fastembed model downloadable) | **37 / 37 passed**, including the real end-to-end flow — the fastembed model really loaded, the sqlite-vec extension really ran, and a *"how do I bake a cake"* query really retrieved the relevant file while excluding the irrelevant one. |
-| ⚠️ A sandbox with the model download blocked | **24 passed, 13 skipped** — every model-free test green, and the 13 model-backed tests skipped with an explicit reason instead of a false pass. |
+| ✅ Development environment (fastembed model downloadable) | **64 tests**, including the real end-to-end flow — the fastembed model really loaded, the sqlite-vec extension really ran, and a *"how do I bake a cake"* query really retrieved the relevant file while excluding the irrelevant one. |
+| ⚠️ A sandbox with the model download blocked | **50 passed, 14 skipped** — measured 15 September 2026. Every model-free test green, and the model-backed ones skipped with an explicit reason instead of a false pass. |
 
 The second row is the honest cost of the first: this suite tells you when it
 *couldn't* verify something.
 
 ---
+
+## What this server can actually do
+
+The expensive question about an MCP server is not what it promises but what it
+**can do on your machine**: which credentials it can touch, where it connects,
+what it runs. Answering that means reading the source, and most people will not.
+
+On every push, [mcp-vet](https://github.com/Furkiozknn/mcp-vet) from the same
+account audits this server from source and writes the whole report into the job
+summary. Today's verdict: **NOT_FLAGGED** (no finding sets the verdict). The gate closes at HIGH and
+above — and it also closes if the tool itself could not run, because "I could not
+look" should not read as green.
+
+Auditing our own server with our own tool had a side effect worth recording: adding
+this job surfaced a real false positive in mcp-vet, which was fixed. A tool nobody
+runs stays right by default.
 
 ## ⚠️ Known limitations
 
@@ -261,3 +309,16 @@ the stack.
 **Built as part of an ecosystem of small, focused, self-hostable AI tools.**
 
 </div>
+
+---
+
+## More from this ecosystem
+
+- **[mini-creative-toolkit](https://github.com/Furkiozknn/mini-creative-toolkit)** — 23 CPU-first media tools behind one MCP server
+- **[nvidia-nim-mcp](https://github.com/Furkiozknn/nvidia-nim-mcp)** — seven MCP tools on NVIDIA NIM's free tier
+- **[voice-io-mcp](https://github.com/Furkiozknn/voice-io-mcp)** — speech in and out, needing no API key
+- **[mcp-vet](https://github.com/Furkiozknn/mcp-vet)** — audits an MCP server's source before you install it
+
+<sub>All of them in one searchable page: **[furkiozknn.github.io](https://furkiozknn.github.io/)** — each card is generated from that repository's own <code>project-meta.json</code>.</sub>
+
+<!-- mcp-name: io.github.Furkiozknn/local-notes-search-mcp -->

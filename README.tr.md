@@ -175,6 +175,7 @@ tamamen çevrimdışı çalışır.
 | Ortam değişkeni | Varsayılan | Ne işe yarar |
 |---|---|---|
 | `LOCAL_NOTES_SEARCH_DB` | `~/.local-notes-search/index.db` | Index'in konumu. **Tüm indexlenen dizinler için TEK bir dosya** — böylece tek bir `search_notes` çağrısı bütün proje klasörlerinizi birden tarayabilir. |
+| `LOCAL_NOTES_SEARCH_ALLOWED_ROOTS` | *ayarsız* | Opsiyonel izin listesi. Ayarlandığında `index_directory`, bu dizinlerin içine çözülmeyen hiçbir yolu kabul etmez. `os.pathsep` ile ayrılır (Linux/macOS'ta `:`, Windows'ta `;`). |
 | `GROQ_API_KEY` | *ayarsız* | Opsiyonel. `ask_notes` sentezini Groq üzerinden açar (zincirdeki ilk sağlayıcı). |
 | `MISTRAL_API_KEY` | *ayarsız* | Opsiyonel. Groq ayarsızsa ya da başarısız olursa `ask_notes` için fallback sağlayıcı. |
 
@@ -184,6 +185,40 @@ girecek bir MCP istemci config dosyasına yazmayın.**
 Varsayılan indexlenen uzantılar: `.md` `.txt` `.py` `.js` `.ts` `.tsx` `.jsx`
 `.json` `.yaml` `.yml` `.rst` `.toml` — çağrı başına `extensions=[...]` ile
 değiştirilebilir.
+
+### 🔒 Ne indexlenebilir
+
+`index_directory` kendisine verilen her yolu okur; `ask_notes` ise bir anahtar
+yapılandırılmışsa getirdiği parçaları **üçüncü taraf bir LLM'e** (Groq ya da
+Mistral) gönderir. Yani indexlenen bir yol, içeriği makineden çıkabilecek bir
+yoldur. İki koruma var:
+
+**1. `LOCAL_NOTES_SEARCH_ALLOWED_ROOTS` (opsiyonel).** Varsayılan olarak
+ayarsız — yani eski davranış: kullanıcının okuyabildiği her dizin
+indexlenebilir. Boş bir varsayılan bir kum havuzu değildir ve bu proje öyle
+olduğunu iddia etmez. Ayarladığınızda `index_directory` dışarıdaki her yolu
+reddeder:
+
+```bash
+export LOCAL_NOTES_SEARCH_ALLOWED_ROOTS="$HOME/notlar:$HOME/projeler"
+```
+
+Yollar kontrolden önce çözülür (`..` sadeleştirilir, sembolik bağlantılar
+izlenir) ve izin verilen bir kökün alt dizini de kabul edilir. Dizin olmayan
+bir giriş sessizce atılmak yerine hata verir — bir yazım hatası izin listesini
+sessizce kapatmamalı.
+
+**2. Kimlik bilgisi dosya adı kara listesi (her zaman açık).** Aşağıdakiler izin
+listesinden ya da `extensions=[...]` argümanından bağımsız olarak asla
+indexlenmez:
+
+`.env` · `.env.*` · `.netrc` · `_netrc` · `id_rsa` · `id_dsa` · `id_ecdsa` ·
+`id_ed25519` · `credentials.json` · `*.pem`
+
+Eşleşme büyük/küçük harf duyarsızdır. Bu bir **ad** kara listesidir, gizli
+bilgi tarayıcısı değil: bariz durumları engeller (`credentials.json` aksi halde
+varsayılan `.json` uzantı filtresinden geçerdi), bir `.md` dosyasına
+yapıştırılmış anahtarı değil.
 
 </details>
 
@@ -207,7 +242,7 @@ değiştirilebilir.
 uv run pytest -v
 ```
 
-**37 test, bilinçli iki katmanlı bir strateji üzerine.** Saf mantık testleri
+**50 test, bilinçli iki katmanlı bir strateji üzerine.** Saf mantık testleri
 (chunking, hash, dosya tarama, `ask_notes`'un sağlayıcı zinciri ve
 degradasyon yolları) her zaman çalışır — model yok, ağ yok, API anahtarı yok.
 Gerçek fastembed modelini veya sqlite-vec eklentisini gerektiren testler,
@@ -218,8 +253,8 @@ Pratikte ne anlama geldiği, ölçüldüğü gibi:
 
 | Ortam | Sonuç |
 |---|---|
-| ✅ Geliştirme ortamı (fastembed modeli indirilebiliyor) | **37 / 37 geçti**, gerçek uçtan uca akış dahil — fastembed modeli gerçekten yüklendi, sqlite-vec eklentisi gerçekten çalıştı ve *"pasta nasıl pişirilir"* araması gerçekten alakalı dosyayı bulup alakasız dosyayı hariç tuttu. |
-| ⚠️ Model indirmesi engellenmiş bir sandbox | **24 geçti, 13 skip** — modele ihtiyaç duymayan her test yeşil; modele dayanan 13 test ise sahte bir geçiş yerine açık bir gerekçeyle skip edildi. |
+| ✅ Geliştirme ortamı (fastembed modeli indirilebiliyor) | **64 test**, gerçek uçtan uca akış dahil — fastembed modeli gerçekten yüklendi, sqlite-vec eklentisi gerçekten çalıştı ve *"pasta nasıl pişirilir"* araması gerçekten alakalı dosyayı bulup alakasız dosyayı hariç tuttu. |
+| ⚠️ Model indirmesi engellenmiş bir sandbox | **50 geçti, 14 skip** — 15 Eylül 2026'da ölçüldü. Modele ihtiyaç duymayan her test yeşil; modele dayananlar ise sahte bir geçiş yerine açık bir gerekçeyle skip edildi. |
 
 İkinci satır, birincinin dürüst bedeli: bu suite, bir şeyi *doğrulayamadığında*
 size bunu söylüyor.

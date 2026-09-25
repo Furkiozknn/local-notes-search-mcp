@@ -1,0 +1,89 @@
+{
+  "schema_version": "1.0.0",
+  "id": "local-notes-search-mcp",
+  "owner": "Furkiozknn",
+  "repository": "https://github.com/Furkiozknn/local-notes-search-mcp",
+  "homepage": "https://furkiozknn.github.io/#local-notes-search-mcp",
+  "releases": "https://github.com/Furkiozknn/local-notes-search-mcp/releases",
+  "status": "active",
+  "category": "mcp-server",
+  "platform": [
+    "mcp",
+    "cli"
+  ],
+  "primary_language": "Python",
+  "technologies": [
+    "Python 3.10+",
+    "sqlite-vec",
+    "multilingual ONNX embeddings",
+    "MCP"
+  ],
+  "version": "0.1.0",
+  "license": "MIT",
+  "topics": [
+    "claude-code",
+    "embeddings",
+    "fastembed",
+    "markdown",
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "obsidian",
+    "offline",
+    "personal-knowledge-base",
+    "privacy-first",
+    "python",
+    "rag",
+    "semantic-search",
+    "sqlite-vec"
+  ],
+  "summary": "Ask your own files a question in plain language instead of guessing the keyword you typed six months ago. Semantic search as an MCP server: sqlite-vec + a multilingual ONNX model, incremental re-indexing, answers returned as file:line. No server, no API key, no network at query time. Grounded LLM Q&A is opt-in. 50 tests.",
+  "key_features": [
+    "Ask your own files a question in plain language instead of guessing the keyword you typed six months ago",
+    "Semantic search as an MCP server: sqlite-vec plus a multilingual ONNX model, with incremental re-indexing",
+    "Answers returned as file:line",
+    "No server, no API key, no network at query time; grounded LLM Q&A is opt-in"
+  ],
+  "media": {
+    "hero": "assets/banner.svg",
+    "screenshots": [],
+    "gifs": [],
+    "videos": []
+  },
+  "tests": {
+    "count": 64,
+    "source": "`64 passed, 1 warning`",
+    "measured": "2026-09-22"
+  },
+  "ci": {
+    "workflows": [
+      "ci.yml",
+      "yayinla.yml"
+    ],
+    "badge": "https://github.com/Furkiozknn/local-notes-search-mcp/actions/workflows/ci.yml/badge.svg"
+  },
+  "docs": {
+    "readme": "README.md",
+    "changelog": null,
+    "version_history": null,
+    "roadmap": null,
+    "security": "SECURITY.md",
+    "contributing": "CONTRIBUTING.md",
+    "license_file": "LICENSE"
+  },
+  "social": {
+    "headline": "Ask your own notes a question instead of guessing the keyword.",
+    "hashtags": [
+      "mcp",
+      "semanticsearch",
+      "obsidian",
+      "privacyfirst"
+    ],
+    "primary_link": "https://github.com/Furkiozknn/local-notes-search-mcp"
+  },
+  "provenance": {
+    "generated_at": "2026-09-22",
+    "generator": "schema/uret.py",
+    "rule": "mechanical fields read from the repository and the GitHub API; editorial fields hand-written and reviewed; no field is generated from a guess"
+  }
+}

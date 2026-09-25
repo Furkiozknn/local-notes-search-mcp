@@ -259,3 +259,38 @@ def test_download_model_refuses_in_offline_mode(monkeypatch):
     monkeypatch.setenv(lns.OFFLINE_ENV, "true")
     with pytest.raises(SystemExit, match=lns.OFFLINE_ENV):
         lns.main(["--download-model"])
+
+
+# --- hidden files, non-regular files, files that grow ---------------------
+
+def test_hidden_files_are_skipped(tmp_path: Path):
+    # ~/.claude.json holds MCP server configs, API keys in `env` included.
+    (tmp_path / ".claude.json").write_text('{"mcpServers": {"x": {"env": {"API_KEY": "sk-..."}}}}')
+    (tmp_path / "notes.json").write_text('{"todo": 1}')
+
+    found = {p.name for p in lns.walk_indexable_files(tmp_path, lns.DEFAULT_EXTENSIONS)}
+    assert found == {"notes.json"}
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs os.mkfifo")
+def test_fifo_with_a_text_extension_is_not_indexable(tmp_path: Path):
+    # read_text() on a FIFO blocks until a writer appears: index_directory hung.
+    os.mkfifo(tmp_path / "inbox.md")
+    (tmp_path / "real.md").write_text("regular file")
+
+    found = {p.name for p in lns.walk_indexable_files(tmp_path, lns.DEFAULT_EXTENSIONS)}
+    assert found == {"real.md"}
+
+
+@requires_sqlite_vec
+def test_file_that_grew_past_the_cap_after_the_walk_is_refused(tmp_path: Path, monkeypatch):
+    note = tmp_path / "log.md"
+    note.write_text("x" * 64)
+    monkeypatch.setattr(lns, "MAX_FILE_BYTES", 32)  # "grew" between walk and read
+
+    conn = lns.get_connection()
+    try:
+        with pytest.raises(ValueError, match="grew past"):
+            lns.index_file(conn, note)
+    finally:
+        conn.close()

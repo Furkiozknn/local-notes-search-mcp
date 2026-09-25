@@ -22,30 +22,33 @@ Two design choices exist specifically to make that true:
    models run in the ~100-150MB range with no torch requirement - a
    deliberate divergence from the sibling tool's pattern, not an oversight.
 
-sqlite-vec's exact Python binding surface (`sqlite_vec.load()`,
-`sqlite_vec.serialize_float32()`) and fastembed's `TextEmbedding` API were
-used per their published documentation but were not live-exercised against a
-real installed package while writing this (see README "Known limitations")
-- the same "verify before fully trusting a name from memory" discipline
-nvidia-nim-mcp and voice-io-mcp both document for their own provider names.
+sqlite-vec's Python binding (`sqlite_vec.load()`, `serialize_float32()`)
+and fastembed's `TextEmbedding` API are exercised for real by the
+model-backed tests, which CI runs with the model required (see
+tests/conftest.py, LOCAL_NOTES_SEARCH_REQUIRE_MODEL).
 """
 
 from __future__ import annotations
 
 import asyncio
 import fnmatch
+import functools
 import hashlib
+import importlib.metadata
 import logging
 import os
 import sqlite3
 import stat
 import threading
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Annotated
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from pydantic import Field
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +108,32 @@ def _embedding_dim() -> int:
         f"LOCAL_NOTES_SEARCH_MODEL={EMBEDDING_MODEL_NAME!r} is not a model this "
         f"fastembed build supports. Supported: {supported}"
     )
+
+
+def embedder_id() -> str:
+    """What produced a vector: the model name AND the fastembed version.
+
+    The model name alone is not enough. fastembed 0.6.0 switched this very
+    model (paraphrase-multilingual-MiniLM-L12-v2) from CLS to mean pooling,
+    so the same model name under fastembed 0.5.1 and 0.6+ gives vectors
+    that are not comparable - an index built with one and queried with the
+    other still returns results, ranked by distances between vectors from
+    two different functions, and nothing says so. Every indexed file
+    records this string; a file whose string differs is re-embedded on the
+    next index_directory even if its content is unchanged, and searches say
+    how many such files are still waiting for that."""
+    return f"{EMBEDDING_MODEL_NAME}@fastembed-{_fastembed_version()}"
+
+
+@functools.lru_cache(maxsize=1)
+def _fastembed_version() -> str:
+    # Cached: the installed package cannot change under a running process,
+    # and index_file asks once per file.
+    try:
+        return importlib.metadata.version("fastembed")
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
+
 
 DEFAULT_EXTENSIONS = {".md", ".txt", ".py", ".js", ".ts", ".tsx", ".jsx", ".json", ".yaml", ".yml", ".rst", ".toml"}
 SKIP_DIR_NAMES = {".git", ".venv", "venv", "node_modules", "__pycache__", "dist", "build", ".pytest_cache", ".next", "egg-info"}
@@ -239,6 +268,11 @@ def should_index_file(path: Path, extensions: set[str], root: Path | None = None
     `build` or `dist` (".../build/notes") indexed nothing at all."""
     if is_secret_filename(path.name):
         return False
+    if root is not None and path.name.startswith("."):
+        # Same reason as hidden directories: pointed at $HOME, `.json` pulled
+        # in ~/.claude.json, which holds MCP server configs with their API
+        # keys in `env`. A dotfile is configuration, not a note.
+        return False
     if path.suffix.lower() not in extensions:
         return False
     if root is not None:
@@ -251,11 +285,15 @@ def should_index_file(path: Path, extensions: set[str], root: Path | None = None
     elif any(part in SKIP_DIR_NAMES or part.endswith(".egg-info") for part in path.parts):
         return False
     try:
-        if path.stat().st_size > MAX_FILE_BYTES:
-            return False
+        st = path.stat()
     except OSError:
         return False
-    return True
+    # Regular files only. A FIFO named `inbox.md` passed every other check
+    # and then blocked read_text() forever, hanging index_directory (and the
+    # whole tool call) on the first `open`; device files are no better.
+    if not stat.S_ISREG(st.st_mode):
+        return False
+    return st.st_size <= MAX_FILE_BYTES
 
 
 def _symlink_target_ok(path: Path, root: Path) -> bool:
@@ -330,7 +368,15 @@ def _get_model():
                 if offline:
                     kwargs["local_files_only"] = True
                 try:
-                    _model = TextEmbedding(model_name=EMBEDDING_MODEL_NAME, **kwargs)
+                    with warnings.catch_warnings():
+                        # fastembed >= 0.6 warns on every load that this model
+                        # "now uses mean pooling" and suggests pinning 0.5.1.
+                        # That advice is wrong here: mean pooling is what the
+                        # model was trained with, and embedder_id() records
+                        # the fastembed version so an index built under the
+                        # old pooling is re-embedded instead of mixed in.
+                        warnings.filterwarnings("ignore", message=r".*now uses mean pooling.*", category=UserWarning)
+                        _model = TextEmbedding(model_name=EMBEDDING_MODEL_NAME, **kwargs)
                 except Exception as e:
                     # Without this the caller sees fastembed's retry log and a
                     # proxy/HTTP error, with no hint that the fix is a one-time
@@ -373,7 +419,8 @@ CREATE TABLE IF NOT EXISTS files (
     path TEXT PRIMARY KEY,
     content_hash TEXT NOT NULL,
     chunk_count INTEGER NOT NULL,
-    indexed_at TEXT NOT NULL
+    indexed_at TEXT NOT NULL,
+    embedder TEXT
 );
 
 CREATE TABLE IF NOT EXISTS chunks (
@@ -396,7 +443,7 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     # 0755 directory), so on a shared machine any local user could read
     # every note that had been indexed. Owner-only on POSIX; Windows
     # profiles are already per-user and chmod cannot express that there.
-    path.parent.mkdir(mode=stat.S_IRWXU, parents=True, exist_ok=True)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     _restrict_permissions(path)
     # Every error path out of here must close `conn` first. Callers do
@@ -411,6 +458,12 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
         sqlite_vec.load(conn)
         conn.enable_load_extension(False)
         conn.executescript(_SCHEMA)
+        # Indexes created before the embedder column existed: add it. Their
+        # rows stay NULL ("unknown embedder"), which counts as stale - the
+        # version that built them was never written down.
+        if "embedder" not in {row[1] for row in conn.execute("PRAGMA table_info(files)")}:
+            conn.execute("ALTER TABLE files ADD COLUMN embedder TEXT")
+            conn.commit()
 
         existing_model = conn.execute("SELECT value FROM meta WHERE key = 'embedding_model'").fetchone()
         if existing_model is None:
@@ -438,11 +491,11 @@ def _restrict_permissions(db_path: Path) -> None:
     if os.name != "posix":
         return
     try:
-        db_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
+        db_path.chmod(0o600)
         # Only tighten a directory this tool owns - a user who put their DB
         # in an existing folder of their own keeps that folder's mode.
         if db_path.parent == DEFAULT_DB_PATH.parent:
-            db_path.parent.chmod(stat.S_IRWXU)  # 0700: a directory needs x to be entered
+            db_path.parent.chmod(0o700)  # a directory needs x to be entered
     except OSError as e:  # not the owner, read-only fs, ... - never fatal
         logger.warning("could not restrict permissions on %s: %s", db_path, e)
 
@@ -464,7 +517,14 @@ def index_file(conn: sqlite3.Connection, path: Path) -> int:
     (0 if skipped as unchanged)."""
     import sqlite_vec
 
-    text = path.read_text(encoding="utf-8", errors="strict")
+    # Bounded read: the size check in should_index_file ran earlier, and a
+    # file can grow between that stat and this open. Never read more than the
+    # cap, whatever the file has become since.
+    with path.open("rb") as fh:
+        raw = fh.read(MAX_FILE_BYTES + 1)
+    if len(raw) > MAX_FILE_BYTES:
+        raise ValueError(f"{path} grew past {MAX_FILE_BYTES} bytes while indexing")
+    text = raw.decode("utf-8", errors="strict")
     if "\x00" in text:
         # NUL is valid UTF-8, so a binary file with a text extension (a
         # .json that is really a database dump, a .txt that is an image)
@@ -472,9 +532,10 @@ def index_file(conn: sqlite3.Connection, path: Path) -> int:
         raise ValueError(f"{path} looks binary (contains NUL bytes)")
     file_hash = content_hash(text)
     file_key = str(path)
+    embedder = embedder_id()
 
-    existing = conn.execute("SELECT content_hash FROM files WHERE path = ?", (file_key,)).fetchone()
-    if existing is not None and existing[0] == file_hash:
+    existing = conn.execute("SELECT content_hash, embedder FROM files WHERE path = ?", (file_key,)).fetchone()
+    if existing is not None and existing[0] == file_hash and existing[1] == embedder:
         return 0
 
     _delete_file_rows(conn, file_key)
@@ -482,8 +543,8 @@ def index_file(conn: sqlite3.Connection, path: Path) -> int:
     chunks = chunk_text(text)
     if not chunks:
         conn.execute(
-            "INSERT INTO files (path, content_hash, chunk_count, indexed_at) VALUES (?, ?, 0, ?)",
-            (file_key, file_hash, datetime.now(timezone.utc).isoformat()),
+            "INSERT INTO files (path, content_hash, chunk_count, indexed_at, embedder) VALUES (?, ?, 0, ?, ?)",
+            (file_key, file_hash, datetime.now(timezone.utc).isoformat(), embedder),
         )
         conn.commit()
         return 0
@@ -500,10 +561,10 @@ def index_file(conn: sqlite3.Connection, path: Path) -> int:
         )
 
     conn.execute(
-        "INSERT INTO files (path, content_hash, chunk_count, indexed_at) VALUES (?, ?, ?, ?) "
+        "INSERT INTO files (path, content_hash, chunk_count, indexed_at, embedder) VALUES (?, ?, ?, ?, ?) "
         "ON CONFLICT(path) DO UPDATE SET content_hash=excluded.content_hash, "
-        "chunk_count=excluded.chunk_count, indexed_at=excluded.indexed_at",
-        (file_key, file_hash, len(chunks), datetime.now(timezone.utc).isoformat()),
+        "chunk_count=excluded.chunk_count, indexed_at=excluded.indexed_at, embedder=excluded.embedder",
+        (file_key, file_hash, len(chunks), datetime.now(timezone.utc).isoformat(), embedder),
     )
     conn.commit()
     return len(chunks)
@@ -571,12 +632,14 @@ async def index_directory(path: str, extensions: list[str] | None = None) -> str
     """Index (or re-index) a local directory for semantic search. Walks
     recursively, skips .git/node_modules/.venv/etc and files >2MB, and
     skips any file whose content is unchanged since the last index (cheap:
-    a whole-file hash check before touching the embedding model). Files
-    that were indexed before but no longer exist under `path` are removed
-    from the index.
+    a whole-file hash check before touching the embedding model) - unless
+    it was embedded by a different model/fastembed version, in which case it
+    is re-embedded. Files that were indexed before but no longer exist under
+    `path` are removed from the index.
 
-    Hidden directories (.ssh, .aws, .config, ...) are skipped; symlinked
-    files are followed only when their target stays inside `path`.
+    Hidden files and directories (.ssh, .aws, .config, .claude.json, ...)
+    and anything that is not a regular file (FIFOs, devices) are skipped;
+    symlinked files are followed only when their target stays inside `path`.
     Credential-shaped file names (.env, id_rsa, credentials.json, .netrc,
     *.pem, *.key, ...) are never indexed. The index stores the full text of
     every chunk. If LOCAL_NOTES_SEARCH_ALLOWED_ROOTS is
@@ -590,9 +653,29 @@ async def index_directory(path: str, extensions: list[str] | None = None) -> str
 # the result is presented (or further processed) differs. Extracted after
 # ask_notes was added, so retrieval logic exists in exactly one place (the
 # same reasoning nvidia-nim-mcp's _run_chat_chain extraction documents).
-def _retrieve(query: str, top_k: int, path_prefix: str | None) -> list[tuple] | str:
-    """Returns a list of (file_path, start_line, end_line, text, distance)
-    rows, or a str error message if the query/top_k is invalid."""
+def _stale_embedder_notice(conn: sqlite3.Connection) -> str:
+    """A warning line when some indexed files were embedded by a different
+    embedder_id() than the one answering this query, else "". Their vectors
+    are still searched - dropping them would silently hide notes instead -
+    but their ranking can be off until they are re-embedded."""
+    stale = conn.execute(
+        "SELECT COUNT(*) FROM files WHERE chunk_count > 0 AND (embedder IS NULL OR embedder != ?)",
+        (embedder_id(),),
+    ).fetchone()[0]
+    if not stale:
+        return ""
+    return (
+        f"Uyarı: {stale} dosya farklı bir gömme sürümüyle indexlenmiş (şu anki: {embedder_id()}); "
+        "bu dosyaların eşleşmeleri güvenilir değil. Bu dizinler için index_directory'yi yeniden "
+        "çalıştırın - içeriği değişmemiş dosyalar da yeniden gömülür (list_indexed_files hangileri "
+        "olduğunu gösterir).\n\n"
+    )
+
+
+def _retrieve(query: str, top_k: int, path_prefix: str | None) -> tuple[list[tuple], str] | str:
+    """Returns ((file_path, start_line, end_line, text, distance) rows,
+    stale-embedder notice or ""), or a str error message if the query/top_k
+    is invalid."""
     import sqlite_vec
 
     if not query.strip():
@@ -615,13 +698,14 @@ def _retrieve(query: str, top_k: int, path_prefix: str | None) -> list[tuple] | 
             """,
             (sqlite_vec.serialize_float32(query_vector), max(top_k * 4, top_k)),  # over-fetch, then filter by prefix below
         ).fetchall()
+        notice = _stale_embedder_notice(conn)
     finally:
         conn.close()
 
     if path_prefix:
         prefix = str(Path(path_prefix).expanduser().resolve())
         rows = [r for r in rows if is_under(r[0], prefix)]
-    return rows[:top_k]
+    return rows[:top_k], notice
 
 
 def _format_results(rows: list[tuple]) -> str:
@@ -632,20 +716,25 @@ def _format_results(rows: list[tuple]) -> str:
     return "\n".join(lines)
 
 
+# The bound is also in the tool's input schema, so a client sees 1-50
+# before it calls; _retrieve still checks it for direct (non-MCP) callers.
+TopK = Annotated[int, Field(ge=1, le=MAX_TOP_K)]
+
 NO_RESULTS_MESSAGE = "Sonuç bulunamadı. Önce index_directory ile bir dizin indexlenmiş mi kontrol edin."
 
 
 def _search_notes_sync(query: str, top_k: int, path_prefix: str | None) -> str:
-    rows = _retrieve(query, top_k, path_prefix)
-    if isinstance(rows, str):
-        return rows
+    retrieved = _retrieve(query, top_k, path_prefix)
+    if isinstance(retrieved, str):
+        return retrieved
+    rows, notice = retrieved
     if not rows:
-        return NO_RESULTS_MESSAGE
-    return _format_results(rows)
+        return notice + NO_RESULTS_MESSAGE
+    return notice + _format_results(rows)
 
 
 @mcp.tool()
-async def search_notes(query: str, top_k: int = 5, path_prefix: str | None = None) -> str:
+async def search_notes(query: str, top_k: TopK = 5, path_prefix: str | None = None) -> str:
     """Semantic search across everything indexed so far. Returns the top
     matching chunks with file path, line range, and a relevance-ordered
     snippet - not just a bag of file names. top_k is 1-50."""
@@ -734,31 +823,32 @@ async def _synthesize_answer(question: str, rows: list[tuple]) -> str | None:
 
 
 async def _ask_notes_async(question: str, top_k: int, path_prefix: str | None) -> str:
-    rows = await asyncio.to_thread(_retrieve, question, top_k, path_prefix)
-    if isinstance(rows, str):
-        return rows
+    retrieved = await asyncio.to_thread(_retrieve, question, top_k, path_prefix)
+    if isinstance(retrieved, str):
+        return retrieved
+    rows, notice = retrieved
     if not rows:
-        return NO_RESULTS_MESSAGE
+        return notice + NO_RESULTS_MESSAGE
 
     if not _build_llm_chain():
-        return (
+        return notice + (
             "Not: GROQ_API_KEY ya da MISTRAL_API_KEY yapılandırılmamış - cevap sentezlenemedi, "
             "ham eşleşen parçalar:\n\n" + _format_results(rows)
         )
 
     answer = await _synthesize_answer(question, rows)
     if answer is None:
-        return (
+        return notice + (
             "Not: LLM sağlayıcı(lar)ından geçerli bir yanıt alınamadı (hata ya da boş içerik) - "
             "ham eşleşen parçalar:\n\n" + _format_results(rows)
         )
 
     sources = "\n".join(f"  - {fp}:{sl}-{el}" for fp, sl, el, _, _ in rows)
-    return f"{answer}\n\nKaynaklar:\n{sources}"
+    return f"{notice}{answer}\n\nKaynaklar:\n{sources}"
 
 
 @mcp.tool()
-async def ask_notes(question: str, top_k: int = 5, path_prefix: str | None = None) -> str:
+async def ask_notes(question: str, top_k: TopK = 5, path_prefix: str | None = None) -> str:
     """Ask a question in natural language about your indexed files. Retrieves
     the most relevant chunks (same retrieval as search_notes) and asks an LLM
     (Groq, then Mistral fallback - needs GROQ_API_KEY or MISTRAL_API_KEY) to
@@ -772,7 +862,7 @@ async def ask_notes(question: str, top_k: int = 5, path_prefix: str | None = Non
 def _list_indexed_files_sync(path_prefix: str | None) -> str:
     conn = get_connection()
     try:
-        rows = conn.execute("SELECT path, chunk_count, indexed_at FROM files ORDER BY path").fetchall()
+        rows = conn.execute("SELECT path, chunk_count, indexed_at, embedder FROM files ORDER BY path").fetchall()
     finally:
         conn.close()
 
@@ -783,8 +873,10 @@ def _list_indexed_files_sync(path_prefix: str | None) -> str:
     if not rows:
         return "Index boş."
     lines = [f"{len(rows)} dosya indexlenmiş:"]
-    for path, chunk_count, indexed_at in rows[:MAX_LISTED_FILES]:
-        lines.append(f"  {path} - {chunk_count} chunk, {indexed_at}")
+    current = embedder_id()
+    for path, chunk_count, indexed_at, embedder in rows[:MAX_LISTED_FILES]:
+        stale = f" [yeniden indexlenmeli: {embedder or 'gömme sürümü kayıtsız'}]" if chunk_count and embedder != current else ""
+        lines.append(f"  {path} - {chunk_count} chunk, {indexed_at}{stale}")
     if len(rows) > MAX_LISTED_FILES:
         lines.append(
             f"  ... ve {len(rows) - MAX_LISTED_FILES} dosya daha (ilk {MAX_LISTED_FILES} gösterildi; "

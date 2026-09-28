@@ -2,6 +2,8 @@
 MCP server.
 
 Zero servers, zero API keys, zero cloud calls - everything stays on disk.
+The one network access is fetching the embedding model the first time (or
+explicitly via `--download-model`); LOCAL_NOTES_SEARCH_OFFLINE=1 forbids it.
 Two design choices exist specifically to make that true:
 
 1. **sqlite-vec** (Apache-2.0) for vector storage: a `vec0` virtual table
@@ -20,29 +22,33 @@ Two design choices exist specifically to make that true:
    models run in the ~100-150MB range with no torch requirement - a
    deliberate divergence from the sibling tool's pattern, not an oversight.
 
-sqlite-vec's exact Python binding surface (`sqlite_vec.load()`,
-`sqlite_vec.serialize_float32()`) and fastembed's `TextEmbedding` API were
-used per their published documentation but were not live-exercised against a
-real installed package while writing this (see README "Known limitations")
-- the same "verify before fully trusting a name from memory" discipline
-nvidia-nim-mcp and voice-io-mcp both document for their own provider names.
+sqlite-vec's Python binding (`sqlite_vec.load()`, `serialize_float32()`)
+and fastembed's `TextEmbedding` API are exercised for real by the
+model-backed tests, which CI runs with the model required (see
+tests/conftest.py, LOCAL_NOTES_SEARCH_REQUIRE_MODEL).
 """
 
 from __future__ import annotations
 
 import asyncio
 import fnmatch
+import functools
 import hashlib
+import importlib.metadata
 import logging
 import os
 import sqlite3
+import stat
 import threading
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Annotated
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from pydantic import Field
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +58,21 @@ mcp = MCPServer("local-notes-search")
 
 DEFAULT_DB_PATH = Path.home() / ".local-notes-search" / "index.db"
 DB_PATH = Path(os.environ.get("LOCAL_NOTES_SEARCH_DB", str(DEFAULT_DB_PATH)))
+
+# Where the ONNX model is cached. fastembed's own default is
+# `<tempdir>/fastembed_cache`, which on most systems is wiped on reboot - so
+# "downloaded once" silently became "downloaded again after every restart",
+# and a network call could happen at search time long after first use. A
+# world-writable /tmp is also a place another local user can pre-seed. The
+# cache now lives next to the index, per user, and survives reboots.
+MODEL_DIR_ENV = "LOCAL_NOTES_SEARCH_MODEL_DIR"
+DEFAULT_MODEL_DIR = Path.home() / ".local-notes-search" / "models"
+
+# Set to 1/true/yes to forbid any model download: the model must already be
+# in the cache (see `local-notes-search-mcp --download-model`). Unset, the
+# first index/search call downloads it from Hugging Face once - the one
+# network call indexing and search can make.
+OFFLINE_ENV = "LOCAL_NOTES_SEARCH_OFFLINE"
 
 # The MCP-ecosystem audit's highest-impact finding: this tool's prompts,
 # docs and target corpus are Turkish, but bge-small-en-v1.5 is an
@@ -88,9 +109,41 @@ def _embedding_dim() -> int:
         f"fastembed build supports. Supported: {supported}"
     )
 
+
+def embedder_id() -> str:
+    """What produced a vector: the model name AND the fastembed version.
+
+    The model name alone is not enough. fastembed 0.6.0 switched this very
+    model (paraphrase-multilingual-MiniLM-L12-v2) from CLS to mean pooling,
+    so the same model name under fastembed 0.5.1 and 0.6+ gives vectors
+    that are not comparable - an index built with one and queried with the
+    other still returns results, ranked by distances between vectors from
+    two different functions, and nothing says so. Every indexed file
+    records this string; a file whose string differs is re-embedded on the
+    next index_directory even if its content is unchanged, and searches say
+    how many such files are still waiting for that."""
+    return f"{EMBEDDING_MODEL_NAME}@fastembed-{_fastembed_version()}"
+
+
+@functools.lru_cache(maxsize=1)
+def _fastembed_version() -> str:
+    # Cached: the installed package cannot change under a running process,
+    # and index_file asks once per file.
+    try:
+        return importlib.metadata.version("fastembed")
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
+
+
 DEFAULT_EXTENSIONS = {".md", ".txt", ".py", ".js", ".ts", ".tsx", ".jsx", ".json", ".yaml", ".yml", ".rst", ".toml"}
 SKIP_DIR_NAMES = {".git", ".venv", "venv", "node_modules", "__pycache__", "dist", "build", ".pytest_cache", ".next", "egg-info"}
 MAX_FILE_BYTES = 2 * 1024 * 1024  # skip anything bigger - pathological chunk counts, probably not a "note"
+
+# Result-size caps. top_k feeds sqlite-vec's KNN `k` (over-fetched 4x for
+# path_prefix filtering), and sqlite-vec rejects k > 4096 with a raw SQL
+# error; 50 chunks is already more context than any client should paste.
+MAX_TOP_K = 50
+MAX_LISTED_FILES = 200
 
 # Opt-in directory allowlist. index_directory otherwise happily indexes any
 # path the running user can read, and ask_notes then ships retrieved chunks
@@ -105,8 +158,11 @@ ALLOWED_ROOTS_ENV = "LOCAL_NOTES_SEARCH_ALLOWED_ROOTS"
 # against the obvious cases only - this is a name denylist, not a secret
 # scanner, and it is applied unconditionally precisely because the allowlist
 # above is opt-in.
-SECRET_FILENAMES = {".env", ".netrc", "_netrc", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "credentials.json"}
-SECRET_FILENAME_GLOBS = ("*.pem", ".env.*")
+SECRET_FILENAMES = {
+    ".env", ".netrc", "_netrc", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "credentials.json",
+    ".npmrc", ".pypirc", ".git-credentials", "secrets.json",
+}
+SECRET_FILENAME_GLOBS = ("*.pem", ".env.*", "*.key", "*.p12", "*.pfx", "*.ppk", "service-account*.json")
 
 CHUNK_CHARS = 1500
 CHUNK_OVERLAP_CHARS = 200
@@ -196,27 +252,79 @@ def allowed_roots() -> list[Path]:
     return roots
 
 
-def should_index_file(path: Path, extensions: set[str]) -> bool:
+def _is_skipped_dir_name(name: str) -> bool:
+    """Noise directories, and every hidden directory: `.ssh`, `.aws`,
+    `.gnupg`, `.docker` (config.json holds registry auth), `.config`
+    (gh's hosts.yml holds an OAuth token) - pointing index_directory at a home
+    directory must not sweep those in through the .json/.yml filters. A hidden
+    directory can still be indexed by passing it as the root itself."""
+    return name in SKIP_DIR_NAMES or name.endswith(".egg-info") or name.startswith(".")
+
+
+def should_index_file(path: Path, extensions: set[str], root: Path | None = None) -> bool:
+    """`root`, when given, is the directory being indexed: the directory-name
+    filter then looks only at the path BELOW it. Checking every part of the
+    absolute path meant a root that merely lived under a directory called
+    `build` or `dist` (".../build/notes") indexed nothing at all."""
     if is_secret_filename(path.name):
+        return False
+    if root is not None and path.name.startswith("."):
+        # Same reason as hidden directories: pointed at $HOME, `.json` pulled
+        # in ~/.claude.json, which holds MCP server configs with their API
+        # keys in `env`. A dotfile is configuration, not a note.
         return False
     if path.suffix.lower() not in extensions:
         return False
-    if any(part in SKIP_DIR_NAMES or part.endswith(".egg-info") for part in path.parts):
+    if root is not None:
+        try:
+            dir_parts = path.relative_to(root).parts[:-1]
+        except ValueError:
+            return False
+        if any(_is_skipped_dir_name(part) for part in dir_parts):
+            return False
+    elif any(part in SKIP_DIR_NAMES or part.endswith(".egg-info") for part in path.parts):
         return False
     try:
-        if path.stat().st_size > MAX_FILE_BYTES:
-            return False
+        st = path.stat()
     except OSError:
         return False
-    return True
+    # Regular files only. A FIFO named `inbox.md` passed every other check
+    # and then blocked read_text() forever, hanging index_directory (and the
+    # whole tool call) on the first `open`; device files are no better.
+    if not stat.S_ISREG(st.st_mode):
+        return False
+    return st.st_size <= MAX_FILE_BYTES
+
+
+def _symlink_target_ok(path: Path, root: Path) -> bool:
+    """A symlinked file is indexed only if it resolves to a regular file that
+    is still inside `root` and whose REAL name is not a secret. Otherwise
+    `notes/todo.md -> ~/.aws/credentials.json` (or any link out of an
+    allowed root) would be read under an innocent name, walking straight past
+    both the denylist and LOCAL_NOTES_SEARCH_ALLOWED_ROOTS. Directory
+    symlinks are never followed (os.walk's default)."""
+    try:
+        target = path.resolve(strict=True)
+    except (OSError, RuntimeError):  # dangling link or a symlink loop
+        return False
+    if not target.is_file() or is_secret_filename(target.name):
+        return False
+    if not target.is_relative_to(root):
+        return False
+    # Inside the root, but not into a directory the walk itself would skip
+    # (a link into root/.ssh/ or root/node_modules/).
+    return not any(_is_skipped_dir_name(part) for part in target.relative_to(root).parts[:-1])
 
 
 def walk_indexable_files(root: Path, extensions: set[str]):
+    root = root.resolve()
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIR_NAMES and not d.endswith(".egg-info")]
+        dirnames[:] = [d for d in dirnames if not _is_skipped_dir_name(d)]
         for name in filenames:
             path = Path(dirpath) / name
-            if should_index_file(path, extensions):
+            if path.is_symlink() and not _symlink_target_ok(path, root):
+                continue
+            if should_index_file(path, extensions, root):
                 yield path
 
 
@@ -236,6 +344,17 @@ _model_lock = threading.Lock()
 _model = None  # type: ignore[var-annotated]
 
 
+def model_dir() -> Path:
+    """LOCAL_NOTES_SEARCH_MODEL_DIR, else fastembed's own FASTEMBED_CACHE_PATH
+    if the user already set one, else ~/.local-notes-search/models."""
+    raw = os.environ.get(MODEL_DIR_ENV) or os.environ.get("FASTEMBED_CACHE_PATH")
+    return Path(raw).expanduser() if raw else DEFAULT_MODEL_DIR
+
+
+def offline_mode() -> bool:
+    return os.environ.get(OFFLINE_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _get_model():
     global _model
     if _model is None:
@@ -243,7 +362,40 @@ def _get_model():
             if _model is None:  # re-check inside the lock - two concurrent callers otherwise both load
                 from fastembed import TextEmbedding
 
-                _model = TextEmbedding(model_name=EMBEDDING_MODEL_NAME)
+                cache = model_dir()
+                offline = offline_mode()
+                kwargs = {"cache_dir": str(cache)}
+                if offline:
+                    kwargs["local_files_only"] = True
+                try:
+                    with warnings.catch_warnings():
+                        # fastembed >= 0.6 warns on every load that this model
+                        # "now uses mean pooling" and suggests pinning 0.5.1.
+                        # That advice is wrong here: mean pooling is what the
+                        # model was trained with, and embedder_id() records
+                        # the fastembed version so an index built under the
+                        # old pooling is re-embedded instead of mixed in.
+                        warnings.filterwarnings("ignore", message=r".*now uses mean pooling.*", category=UserWarning)
+                        _model = TextEmbedding(model_name=EMBEDDING_MODEL_NAME, **kwargs)
+                except Exception as e:
+                    # Without this the caller sees fastembed's retry log and a
+                    # proxy/HTTP error, with no hint that the fix is a one-time
+                    # download or a different cache path.
+                    if offline:
+                        hint = (
+                            f"{OFFLINE_ENV} is set, so nothing is downloaded and the model is not in "
+                            f"{cache}. Run `local-notes-search-mcp --download-model` once with network "
+                            f"access (same {MODEL_DIR_ENV}), or unset {OFFLINE_ENV}."
+                        )
+                    else:
+                        hint = (
+                            "The first index/search call downloads it from Hugging Face once; that "
+                            "download failed. Check network access, or copy the model into "
+                            f"{cache} ({MODEL_DIR_ENV}) and set {OFFLINE_ENV}=1."
+                        )
+                    raise ToolError(
+                        f"Embedding model {EMBEDDING_MODEL_NAME!r} could not be loaded: {e}. {hint}"
+                    ) from e
     return _model
 
 
@@ -267,7 +419,8 @@ CREATE TABLE IF NOT EXISTS files (
     path TEXT PRIMARY KEY,
     content_hash TEXT NOT NULL,
     chunk_count INTEGER NOT NULL,
-    indexed_at TEXT NOT NULL
+    indexed_at TEXT NOT NULL,
+    embedder TEXT
 );
 
 CREATE TABLE IF NOT EXISTS chunks (
@@ -285,8 +438,14 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     import sqlite_vec
 
     path = db_path or DB_PATH
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # The index holds the full text of every indexed chunk, in plain text.
+    # With the default umask it came out world-readable (0644 file in a
+    # 0755 directory), so on a shared machine any local user could read
+    # every note that had been indexed. Owner-only on POSIX; Windows
+    # profiles are already per-user and chmod cannot express that there.
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
+    _restrict_permissions(path)
     # Every error path out of here must close `conn` first. Callers do
     # `conn = get_connection()` then `try/finally: conn.close()`, and that
     # finally never runs if the assignment itself never completes - the
@@ -299,6 +458,12 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
         sqlite_vec.load(conn)
         conn.enable_load_extension(False)
         conn.executescript(_SCHEMA)
+        # Indexes created before the embedder column existed: add it. Their
+        # rows stay NULL ("unknown embedder"), which counts as stale - the
+        # version that built them was never written down.
+        if "embedder" not in {row[1] for row in conn.execute("PRAGMA table_info(files)")}:
+            conn.execute("ALTER TABLE files ADD COLUMN embedder TEXT")
+            conn.commit()
 
         existing_model = conn.execute("SELECT value FROM meta WHERE key = 'embedding_model'").fetchone()
         if existing_model is None:
@@ -322,6 +487,19 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     return conn
 
 
+def _restrict_permissions(db_path: Path) -> None:
+    if os.name != "posix":
+        return
+    try:
+        db_path.chmod(0o600)
+        # Only tighten a directory this tool owns - a user who put their DB
+        # in an existing folder of their own keeps that folder's mode.
+        if db_path.parent == DEFAULT_DB_PATH.parent:
+            db_path.parent.chmod(0o700)  # a directory needs x to be entered
+    except OSError as e:  # not the owner, read-only fs, ... - never fatal
+        logger.warning("could not restrict permissions on %s: %s", db_path, e)
+
+
 def _delete_file_rows(conn: sqlite3.Connection, file_path: str) -> None:
     ids = [row[0] for row in conn.execute("SELECT id FROM chunks WHERE file_path = ?", (file_path,)).fetchall()]
     for chunk_id in ids:
@@ -339,12 +517,25 @@ def index_file(conn: sqlite3.Connection, path: Path) -> int:
     (0 if skipped as unchanged)."""
     import sqlite_vec
 
-    text = path.read_text(encoding="utf-8", errors="strict")
+    # Bounded read: the size check in should_index_file ran earlier, and a
+    # file can grow between that stat and this open. Never read more than the
+    # cap, whatever the file has become since.
+    with path.open("rb") as fh:
+        raw = fh.read(MAX_FILE_BYTES + 1)
+    if len(raw) > MAX_FILE_BYTES:
+        raise ValueError(f"{path} grew past {MAX_FILE_BYTES} bytes while indexing")
+    text = raw.decode("utf-8", errors="strict")
+    if "\x00" in text:
+        # NUL is valid UTF-8, so a binary file with a text extension (a
+        # .json that is really a database dump, a .txt that is an image)
+        # decodes fine and would be embedded as noise.
+        raise ValueError(f"{path} looks binary (contains NUL bytes)")
     file_hash = content_hash(text)
     file_key = str(path)
+    embedder = embedder_id()
 
-    existing = conn.execute("SELECT content_hash FROM files WHERE path = ?", (file_key,)).fetchone()
-    if existing is not None and existing[0] == file_hash:
+    existing = conn.execute("SELECT content_hash, embedder FROM files WHERE path = ?", (file_key,)).fetchone()
+    if existing is not None and existing[0] == file_hash and existing[1] == embedder:
         return 0
 
     _delete_file_rows(conn, file_key)
@@ -352,8 +543,8 @@ def index_file(conn: sqlite3.Connection, path: Path) -> int:
     chunks = chunk_text(text)
     if not chunks:
         conn.execute(
-            "INSERT INTO files (path, content_hash, chunk_count, indexed_at) VALUES (?, ?, 0, ?)",
-            (file_key, file_hash, datetime.now(timezone.utc).isoformat()),
+            "INSERT INTO files (path, content_hash, chunk_count, indexed_at, embedder) VALUES (?, ?, 0, ?, ?)",
+            (file_key, file_hash, datetime.now(timezone.utc).isoformat(), embedder),
         )
         conn.commit()
         return 0
@@ -370,10 +561,10 @@ def index_file(conn: sqlite3.Connection, path: Path) -> int:
         )
 
     conn.execute(
-        "INSERT INTO files (path, content_hash, chunk_count, indexed_at) VALUES (?, ?, ?, ?) "
+        "INSERT INTO files (path, content_hash, chunk_count, indexed_at, embedder) VALUES (?, ?, ?, ?, ?) "
         "ON CONFLICT(path) DO UPDATE SET content_hash=excluded.content_hash, "
-        "chunk_count=excluded.chunk_count, indexed_at=excluded.indexed_at",
-        (file_key, file_hash, len(chunks), datetime.now(timezone.utc).isoformat()),
+        "chunk_count=excluded.chunk_count, indexed_at=excluded.indexed_at, embedder=excluded.embedder",
+        (file_key, file_hash, len(chunks), datetime.now(timezone.utc).isoformat(), embedder),
     )
     conn.commit()
     return len(chunks)
@@ -402,14 +593,18 @@ def _index_directory_sync(path: str, extensions: list[str] | None) -> str:
     conn = get_connection()
     try:
         seen_files = set()
-        indexed, skipped_unchanged, chunk_total = 0, 0, 0
+        indexed, skipped_unchanged, chunk_total, unreadable = 0, 0, 0, 0
         for file_path in walk_indexable_files(root, ext_set):
-            seen_files.add(str(file_path))
             try:
                 n_chunks = index_file(conn, file_path)
-            except (UnicodeDecodeError, OSError) as e:
+            except (ValueError, OSError) as e:  # UnicodeDecodeError is a ValueError
+                # Not added to seen_files: a file that USED to be readable
+                # text and no longer is must drop out of the index below,
+                # not keep answering searches with its old content.
                 logger.warning("skipping %s: %s", file_path, e)
+                unreadable += 1
                 continue
+            seen_files.add(str(file_path))
             if n_chunks == 0:
                 skipped_unchanged += 1
             else:
@@ -425,7 +620,8 @@ def _index_directory_sync(path: str, extensions: list[str] | None) -> str:
 
         return (
             f"{root} indexlendi: {indexed} dosya (yeni/değişmiş), {skipped_unchanged} değişmemiş dosya atlandı, "
-            f"{chunk_total} yeni chunk, {len(stale)} silinmiş dosya temizlendi."
+            f"{chunk_total} yeni chunk, {len(stale)} silinmiş dosya temizlendi"
+            + (f", {unreadable} dosya okunamadı (UTF-8 metin değil ya da ikili)." if unreadable else ".")
         )
     finally:
         conn.close()
@@ -436,12 +632,17 @@ async def index_directory(path: str, extensions: list[str] | None = None) -> str
     """Index (or re-index) a local directory for semantic search. Walks
     recursively, skips .git/node_modules/.venv/etc and files >2MB, and
     skips any file whose content is unchanged since the last index (cheap:
-    a whole-file hash check before touching the embedding model). Files
-    that were indexed before but no longer exist under `path` are removed
-    from the index.
+    a whole-file hash check before touching the embedding model) - unless
+    it was embedded by a different model/fastembed version, in which case it
+    is re-embedded. Files that were indexed before but no longer exist under
+    `path` are removed from the index.
 
+    Hidden files and directories (.ssh, .aws, .config, .claude.json, ...)
+    and anything that is not a regular file (FIFOs, devices) are skipped;
+    symlinked files are followed only when their target stays inside `path`.
     Credential-shaped file names (.env, id_rsa, credentials.json, .netrc,
-    *.pem, ...) are never indexed. If LOCAL_NOTES_SEARCH_ALLOWED_ROOTS is
+    *.pem, *.key, ...) are never indexed. The index stores the full text of
+    every chunk. If LOCAL_NOTES_SEARCH_ALLOWED_ROOTS is
     set, `path` must resolve inside one of its entries; unset (the default)
     means any readable directory is indexable."""
     return await asyncio.to_thread(_index_directory_sync, path, extensions)
@@ -452,15 +653,37 @@ async def index_directory(path: str, extensions: list[str] | None = None) -> str
 # the result is presented (or further processed) differs. Extracted after
 # ask_notes was added, so retrieval logic exists in exactly one place (the
 # same reasoning nvidia-nim-mcp's _run_chat_chain extraction documents).
-def _retrieve(query: str, top_k: int, path_prefix: str | None) -> list[tuple] | str:
-    """Returns a list of (file_path, start_line, end_line, text, distance)
-    rows, or a str error message if the query/top_k is invalid."""
+def _stale_embedder_notice(conn: sqlite3.Connection) -> str:
+    """A warning line when some indexed files were embedded by a different
+    embedder_id() than the one answering this query, else "". Their vectors
+    are still searched - dropping them would silently hide notes instead -
+    but their ranking can be off until they are re-embedded."""
+    stale = conn.execute(
+        "SELECT COUNT(*) FROM files WHERE chunk_count > 0 AND (embedder IS NULL OR embedder != ?)",
+        (embedder_id(),),
+    ).fetchone()[0]
+    if not stale:
+        return ""
+    return (
+        f"Uyarı: {stale} dosya farklı bir gömme sürümüyle indexlenmiş (şu anki: {embedder_id()}); "
+        "bu dosyaların eşleşmeleri güvenilir değil. Bu dizinler için index_directory'yi yeniden "
+        "çalıştırın - içeriği değişmemiş dosyalar da yeniden gömülür (list_indexed_files hangileri "
+        "olduğunu gösterir).\n\n"
+    )
+
+
+def _retrieve(query: str, top_k: int, path_prefix: str | None) -> tuple[list[tuple], str] | str:
+    """Returns ((file_path, start_line, end_line, text, distance) rows,
+    stale-embedder notice or ""), or a str error message if the query/top_k
+    is invalid."""
     import sqlite_vec
 
     if not query.strip():
         return "Hata: boş sorgu."
     if top_k <= 0:
         return "Hata: top_k pozitif bir sayı olmalı."
+    if top_k > MAX_TOP_K:
+        return f"Hata: top_k en fazla {MAX_TOP_K} olabilir (istenen: {top_k})."
 
     conn = get_connection()
     try:
@@ -475,13 +698,14 @@ def _retrieve(query: str, top_k: int, path_prefix: str | None) -> list[tuple] | 
             """,
             (sqlite_vec.serialize_float32(query_vector), max(top_k * 4, top_k)),  # over-fetch, then filter by prefix below
         ).fetchall()
+        notice = _stale_embedder_notice(conn)
     finally:
         conn.close()
 
     if path_prefix:
         prefix = str(Path(path_prefix).expanduser().resolve())
         rows = [r for r in rows if is_under(r[0], prefix)]
-    return rows[:top_k]
+    return rows[:top_k], notice
 
 
 def _format_results(rows: list[tuple]) -> str:
@@ -492,23 +716,28 @@ def _format_results(rows: list[tuple]) -> str:
     return "\n".join(lines)
 
 
+# The bound is also in the tool's input schema, so a client sees 1-50
+# before it calls; _retrieve still checks it for direct (non-MCP) callers.
+TopK = Annotated[int, Field(ge=1, le=MAX_TOP_K)]
+
 NO_RESULTS_MESSAGE = "Sonuç bulunamadı. Önce index_directory ile bir dizin indexlenmiş mi kontrol edin."
 
 
 def _search_notes_sync(query: str, top_k: int, path_prefix: str | None) -> str:
-    rows = _retrieve(query, top_k, path_prefix)
-    if isinstance(rows, str):
-        return rows
+    retrieved = _retrieve(query, top_k, path_prefix)
+    if isinstance(retrieved, str):
+        return retrieved
+    rows, notice = retrieved
     if not rows:
-        return NO_RESULTS_MESSAGE
-    return _format_results(rows)
+        return notice + NO_RESULTS_MESSAGE
+    return notice + _format_results(rows)
 
 
 @mcp.tool()
-async def search_notes(query: str, top_k: int = 5, path_prefix: str | None = None) -> str:
+async def search_notes(query: str, top_k: TopK = 5, path_prefix: str | None = None) -> str:
     """Semantic search across everything indexed so far. Returns the top
     matching chunks with file path, line range, and a relevance-ordered
-    snippet - not just a bag of file names."""
+    snippet - not just a bag of file names. top_k is 1-50."""
     return await asyncio.to_thread(_search_notes_sync, query, top_k, path_prefix)
 
 
@@ -594,31 +823,32 @@ async def _synthesize_answer(question: str, rows: list[tuple]) -> str | None:
 
 
 async def _ask_notes_async(question: str, top_k: int, path_prefix: str | None) -> str:
-    rows = await asyncio.to_thread(_retrieve, question, top_k, path_prefix)
-    if isinstance(rows, str):
-        return rows
+    retrieved = await asyncio.to_thread(_retrieve, question, top_k, path_prefix)
+    if isinstance(retrieved, str):
+        return retrieved
+    rows, notice = retrieved
     if not rows:
-        return NO_RESULTS_MESSAGE
+        return notice + NO_RESULTS_MESSAGE
 
     if not _build_llm_chain():
-        return (
+        return notice + (
             "Not: GROQ_API_KEY ya da MISTRAL_API_KEY yapılandırılmamış - cevap sentezlenemedi, "
             "ham eşleşen parçalar:\n\n" + _format_results(rows)
         )
 
     answer = await _synthesize_answer(question, rows)
     if answer is None:
-        return (
+        return notice + (
             "Not: LLM sağlayıcı(lar)ından geçerli bir yanıt alınamadı (hata ya da boş içerik) - "
             "ham eşleşen parçalar:\n\n" + _format_results(rows)
         )
 
     sources = "\n".join(f"  - {fp}:{sl}-{el}" for fp, sl, el, _, _ in rows)
-    return f"{answer}\n\nKaynaklar:\n{sources}"
+    return f"{notice}{answer}\n\nKaynaklar:\n{sources}"
 
 
 @mcp.tool()
-async def ask_notes(question: str, top_k: int = 5, path_prefix: str | None = None) -> str:
+async def ask_notes(question: str, top_k: TopK = 5, path_prefix: str | None = None) -> str:
     """Ask a question in natural language about your indexed files. Retrieves
     the most relevant chunks (same retrieval as search_notes) and asks an LLM
     (Groq, then Mistral fallback - needs GROQ_API_KEY or MISTRAL_API_KEY) to
@@ -632,7 +862,7 @@ async def ask_notes(question: str, top_k: int = 5, path_prefix: str | None = Non
 def _list_indexed_files_sync(path_prefix: str | None) -> str:
     conn = get_connection()
     try:
-        rows = conn.execute("SELECT path, chunk_count, indexed_at FROM files ORDER BY path").fetchall()
+        rows = conn.execute("SELECT path, chunk_count, indexed_at, embedder FROM files ORDER BY path").fetchall()
     finally:
         conn.close()
 
@@ -643,8 +873,15 @@ def _list_indexed_files_sync(path_prefix: str | None) -> str:
     if not rows:
         return "Index boş."
     lines = [f"{len(rows)} dosya indexlenmiş:"]
-    for path, chunk_count, indexed_at in rows:
-        lines.append(f"  {path} - {chunk_count} chunk, {indexed_at}")
+    current = embedder_id()
+    for path, chunk_count, indexed_at, embedder in rows[:MAX_LISTED_FILES]:
+        stale = f" [yeniden indexlenmeli: {embedder or 'gömme sürümü kayıtsız'}]" if chunk_count and embedder != current else ""
+        lines.append(f"  {path} - {chunk_count} chunk, {indexed_at}{stale}")
+    if len(rows) > MAX_LISTED_FILES:
+        lines.append(
+            f"  ... ve {len(rows) - MAX_LISTED_FILES} dosya daha (ilk {MAX_LISTED_FILES} gösterildi; "
+            "daraltmak için path_prefix kullanın)"
+        )
     return "\n".join(lines)
 
 
@@ -679,7 +916,19 @@ async def remove_directory(path: str) -> str:
     return await asyncio.to_thread(_remove_directory_sync, path)
 
 
-def main() -> None:
+def download_model() -> Path:
+    """Fetch the embedding model into model_dir() now, explicitly, so that
+    every later index/search call can run with LOCAL_NOTES_SEARCH_OFFLINE=1."""
+    if offline_mode():
+        raise SystemExit(f"--download-model needs network access; unset {OFFLINE_ENV} for this one run.")
+    try:
+        _get_model()
+    except ToolError as e:
+        raise SystemExit(str(e)) from None
+    return model_dir()
+
+
+def main(argv: list[str] | None = None) -> None:
     """Console entry point.
 
     A separate function because `[project.scripts]` wants a CALLABLE, not a
@@ -687,6 +936,23 @@ def main() -> None:
     have to clone the repository and point at the file, which defeats the
     point of publishing it.
     """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="local-notes-search-mcp",
+        description="Semantic search over your own local files, as a stdio MCP server.",
+    )
+    parser.add_argument(
+        "--download-model",
+        action="store_true",
+        help=f"download the embedding model into the cache ({MODEL_DIR_ENV}, default "
+        f"{DEFAULT_MODEL_DIR}) and exit, instead of starting the server",
+    )
+    args = parser.parse_args(argv)
+    if args.download_model:
+        path = download_model()
+        print(f"{EMBEDDING_MODEL_NAME} is cached in {path}. Set {OFFLINE_ENV}=1 to forbid any further download.")
+        return
     mcp.run(transport="stdio")
 
 

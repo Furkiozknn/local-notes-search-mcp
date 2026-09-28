@@ -8,6 +8,7 @@ so `uv run pytest` gives an honest signal in an offline/minimal CI runner."""
 
 from __future__ import annotations
 
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -43,6 +44,15 @@ def _sqlite_vec_available() -> bool:
 
 MODEL_AVAILABLE = _model_available()
 SQLITE_VEC_AVAILABLE = _sqlite_vec_available()
+
+# CI sets this so the model-backed tests cannot quietly turn into skips: a
+# flaky Hugging Face download used to leave the job green with 14 tests not
+# run. Locally it stays unset and the honest skip still applies.
+if os.environ.get("LOCAL_NOTES_SEARCH_REQUIRE_MODEL") == "1" and not (MODEL_AVAILABLE and SQLITE_VEC_AVAILABLE):
+    raise RuntimeError(
+        "LOCAL_NOTES_SEARCH_REQUIRE_MODEL=1 but the fastembed model "
+        f"(loaded: {MODEL_AVAILABLE}) or sqlite-vec (loaded: {SQLITE_VEC_AVAILABLE}) is unavailable"
+    )
 
 requires_model = pytest.mark.skipif(not MODEL_AVAILABLE, reason="fastembed model not available (no network on first run, or dependency missing)")
 requires_sqlite_vec = pytest.mark.skipif(not SQLITE_VEC_AVAILABLE, reason="sqlite-vec extension not loadable in this environment")

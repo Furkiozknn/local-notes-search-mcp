@@ -59,8 +59,14 @@ donuluyor.
 ## 4. Testler
 
 ```
-pytest -q
+uv run pytest -q
 ```
+
+Model gerektiren 14 test, embedding modeli yuklenemezse (ag yok, Hugging Face
+engelli) gerekcesiyle skip edilir. CI bunlari `LOCAL_NOTES_SEARCH_REQUIRE_MODEL=1`
+ile zorunlu kosar: model yoksa is kirmizi yanar. Yerelde de ayni sarti
+istersen once `uv run local-notes-search-mcp --download-model`, sonra
+`LOCAL_NOTES_SEARCH_REQUIRE_MODEL=1 uv run pytest -q`.
 
 Yeni davranis ekliyorsan **testini de ekle**. Hata duzeltiyorsan, once
 hatayi yakalayan testi yaz, sonra duzelt -- boylece testin gercekten o

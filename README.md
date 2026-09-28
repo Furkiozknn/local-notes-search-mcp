@@ -4,6 +4,9 @@
 
 # 🔎 local-notes-search-mcp
 
+<p align="center"><img src="docs/reel/reel.gif" alt="local-notes-search-mcp - 15-second motion reel" width="720"></p>
+<p align="center"><sub><a href="docs/reel/reel.mp4">MP4 version with sound</a></sub></p>
+
 ### **Semantic search over your own files — as an MCP server.**
 
 *Ask questions in plain language instead of guessing the exact keyword you typed six months ago.*

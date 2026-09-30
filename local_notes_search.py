@@ -39,6 +39,7 @@ import logging
 import os
 import sqlite3
 import stat
+import sys
 import threading
 import warnings
 from dataclasses import dataclass
@@ -57,7 +58,8 @@ mcp = MCPServer("local-notes-search")
 # --- configuration -----------------------------------------------------
 
 DEFAULT_DB_PATH = Path.home() / ".local-notes-search" / "index.db"
-DB_PATH = Path(os.environ.get("LOCAL_NOTES_SEARCH_DB", str(DEFAULT_DB_PATH)))
+DB_ENV = "LOCAL_NOTES_SEARCH_DB"
+DB_PATH = Path(os.environ.get(DB_ENV, str(DEFAULT_DB_PATH)))
 
 # Where the ONNX model is cached. fastembed's own default is
 # `<tempdir>/fastembed_cache`, which on most systems is wiped on reboot - so
@@ -394,7 +396,7 @@ def _get_model():
                             f"{cache} ({MODEL_DIR_ENV}) and set {OFFLINE_ENV}=1."
                         )
                     raise ToolError(
-                        f"Embedding model {EMBEDDING_MODEL_NAME!r} could not be loaded: {e}. {hint}"
+                        f"Embedding model {EMBEDDING_MODEL_NAME!r} could not be loaded: {str(e).rstrip('. ')}. {hint}"
                     ) from e
     return _model
 
@@ -580,7 +582,9 @@ def index_file(conn: sqlite3.Connection, path: Path) -> int:
 def _index_directory_sync(path: str, extensions: list[str] | None) -> str:
     root = Path(path).expanduser().resolve()
     if not root.is_dir():
-        return f"Hata: {root} bir dizin değil ya da bulunamadı."
+        if root.is_file():
+            return f"Hata: {root} bir dosya; index_directory bir dizin ister (dosyanın bulunduğu dizini verin)."
+        return f"Hata: {root} bulunamadı (dizin yok ya da okunamıyor)."
 
     roots = allowed_roots()
     if roots and not any(is_under(str(root), str(r)) for r in roots):
@@ -618,11 +622,19 @@ def _index_directory_sync(path: str, extensions: list[str] | None) -> str:
             _delete_file_rows(conn, stale_path)
         conn.commit()
 
-        return (
+        message = (
             f"{root} indexlendi: {indexed} dosya (yeni/değişmiş), {skipped_unchanged} değişmemiş dosya atlandı, "
             f"{chunk_total} yeni chunk, {len(stale)} silinmiş dosya temizlendi"
             + (f", {unreadable} dosya okunamadı (UTF-8 metin değil ya da ikili)." if unreadable else ".")
         )
+        if not (indexed or skipped_unchanged or unreadable):
+            # "0 dosya indexlendi" on a typo'd folder looked like success.
+            message += (
+                f" Bu dizinde indexlenecek dosya bulunamadı (aranan uzantılar: {', '.join(sorted(ext_set))}; "
+                "gizli dizinler ve kimlik bilgisi adlı dosyalar hiç taranmaz). Başka uzantılar için "
+                "extensions=[...] verin."
+            )
+        return message
     finally:
         conn.close()
 
@@ -921,11 +933,51 @@ def download_model() -> Path:
     every later index/search call can run with LOCAL_NOTES_SEARCH_OFFLINE=1."""
     if offline_mode():
         raise SystemExit(f"--download-model needs network access; unset {OFFLINE_ENV} for this one run.")
+    # The HTTP client logs every request at INFO (148 lines on a cold cache);
+    # this command's answer is the one line main() prints afterwards.
+    for noisy in ("httpx", "httpcore", "huggingface_hub"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+    print(
+        f"Downloading {EMBEDDING_MODEL_NAME} (about 0.22 GB, one time) from Hugging Face into {model_dir()} ...",
+        file=sys.stderr,
+    )
     try:
         _get_model()
     except ToolError as e:
         raise SystemExit(str(e)) from None
     return model_dir()
+
+
+def _package_version() -> str:
+    try:
+        return importlib.metadata.version("local-notes-search-mcp")
+    except importlib.metadata.PackageNotFoundError:  # run from a bare checkout, not installed
+        return "unknown (not installed as a package)"
+
+
+HELP_EPILOG = f"""With no options this starts the server on stdin/stdout: an MCP client launches
+it, you do not type into it. Register it in your client, for example:
+
+  {{"mcpServers": {{"local-notes-search": {{"command": "uv", "args":
+    ["--directory", "/abs/path/to/local-notes-search-mcp", "run", "local_notes_search.py"]}}}}}}
+
+Tools it serves: index_directory, search_notes, ask_notes (optional, needs
+GROQ_API_KEY or MISTRAL_API_KEY), list_indexed_files, remove_directory.
+
+Environment:
+  {DB_ENV}
+      index file (default {DEFAULT_DB_PATH})
+  {MODEL_DIR_ENV}
+      model cache (default {DEFAULT_MODEL_DIR})
+  {OFFLINE_ENV}
+      1 = never download; run --download-model once first
+  {ALLOWED_ROOTS_ENV}
+      only these directories may be indexed (os.pathsep separated)
+  GROQ_API_KEY, MISTRAL_API_KEY
+      enable ask_notes synthesis (opt-in)
+
+First run downloads the embedding model (about 0.22 GB) unless it is cached.
+"""
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -941,7 +993,10 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="local-notes-search-mcp",
         description="Semantic search over your own local files, as a stdio MCP server.",
+        epilog=HELP_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {_package_version()}")
     parser.add_argument(
         "--download-model",
         action="store_true",

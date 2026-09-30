@@ -1,0 +1,82 @@
+# local-notes-search-mcp terminal demo: real commands, real output
+# tarih: 2026-09-30T03:17:25+03:00
+# depo: local-notes-search-mcp @ 031d7e5 2026-09-28 (calisma agaci, komutlar deponun kokunden kosuldu)
+# notlar: examples/notes/ (depoya ait ornek notlar, kisisel not degil); indeks gecici klasorde
+# her komut bash -c 'set -o pipefail; ...' ile kosuldu; hicbir satir elle yazilmadi
+
+$ uv run local-notes-search-mcp --version
+local-notes-search-mcp 0.1.0
+[cikis kodu 0] (4.87 s)
+
+$ uv run python examples/stdio_demo.py
+
+### initialize
+server=local-notes-search protocol=2025-11-25
+
+### tools/list
+index_directory(path, extensions)
+search_notes(query, top_k, path_prefix)
+ask_notes(question, top_k, path_prefix)
+list_indexed_files(path_prefix)
+remove_directory(path)
+
+### index_directory(examples/notes)
+examples/notes indexlendi: 5 dosya (yeni/değişmiş), 0 değişmemiş dosya atlandı, 5 yeni chunk, 0 silinmiş dosya temizlendi.
+
+### search_notes("what did I decide about the auth redesign?", top_k=2)
+2 sonuç:
+
+--- examples/notes/2026-08-decisions.md:1-10 (distance=4.5000) ---
+# Decisions, August 2026
+
+## Auth redesign
+Decided: session cookies instead of JWT. The refresh-token rotation story was
+getting worse than the problem it solved, and every client we ship is a browser.
+Revisit if we ever add a public API for third parties.
+
+## Billing provider
+Staying with the current provider for one more quarter. Migration cost is real,
+the invoice-export bug is not blocking any…
+
+--- examples/notes/meeting-2026-07-30.md:1-7 (distance=5.0842) ---
+# Meeting, 30 July
+
+Attendees: Ada, Ben, Chi.
+
+- Agreed to revisit the login flow after the billing migration ships.
+- Ben will write up the on-call rota for September.
+- Chi: the staging database is 40 GB now, needs pruning before the next load test.
+
+### search_notes("how do I cook pasta", top_k=2)
+2 sonuç:
+
+--- examples/notes/recipes-pasta.md:1-5 (distance=4.3511) ---
+# Pasta notes
+
+Salt the water until it tastes like the sea. Cook the spaghetti two minutes
+short of the packet time, then finish it in the pan with a ladle of the starchy
+cooking water and the garlic and chili oil. Never rinse the pasta.
+
+--- examples/notes/kitchen-notu.md:1-4 (distance=4.9082) ---
+# Mutfak notları (Türkçe)
+
+Makarnayı bol tuzlu suda haşla, süzdükten sonra yıkama. Sosu tavada bir kepçe
+makarna suyuyla birleştir, böylece sos makarnaya yapışır.
+
+### list_indexed_files()
+5 dosya indexlenmiş:
+  examples/notes/2026-08-decisions.md - 1 chunk, 2026-09-30T00:17:22.315621+00:00
+  examples/notes/car-maintenance.md - 1 chunk, 2026-09-30T00:17:22.653205+00:00
+  examples/notes/kitchen-notu.md - 1 chunk, 2026-09-30T00:17:22.986204+00:00
+  examples/notes/meeting-2026-07-30.md - 1 chunk, 2026-09-30T00:17:23.373444+00:00
+  examples/notes/recipes-pasta.md - 1 chunk, 2026-09-30T00:17:23.728121+00:00
+
+### search_notes(query="")
+Hata: boş sorgu.
+
+### index_directory($TMP/no-such-dir)
+Hata: $TMP/no-such-dir bulunamadı (dizin yok ya da okunamıyor).
+
+### remove_directory(examples/notes)
+5 dosya index'ten kaldırıldı (examples/notes altında).
+[cikis kodu 0] (17.22 s)

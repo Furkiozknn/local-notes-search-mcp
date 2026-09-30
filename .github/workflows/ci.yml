@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
 
       - name: Install dependencies
         run: uv sync --group dev
@@ -28,7 +28,7 @@ jobs:
       # al. Anahtar model adini tasiyor: LOCAL_NOTES_SEARCH_MODEL varsayilani
       # degisirse onbellek kendiliginden yenilenir.
       - name: Embedding modeli onbellegi
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/lns-model
           key: lns-model-paraphrase-multilingual-MiniLM-L12-v2-v1
@@ -57,7 +57,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
 
       - name: Install dependencies
         run: uv sync --group dev --python ${{ matrix.python }}
@@ -66,7 +66,7 @@ jobs:
         run: uv run --python ${{ matrix.python }} python -c "import sys; v='%d.%d' % sys.version_info[:2]; assert v == '${{ matrix.python }}', v; print(v)"
 
       - name: Embedding modeli onbellegi
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ~/.cache/lns-model
           key: lns-model-paraphrase-multilingual-MiniLM-L12-v2-v1
@@ -85,10 +85,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10  # olculen en uzun kosu 13 sn
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
 
       - name: Paket derleniyor mu
         run: uv build
@@ -115,8 +115,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10  # olculen en uzun kosu 11 sn
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
 
       # Ayni hesaptaki mcp-vet: bir MCP sunucusunun ne yapabildigini
       # kaynaktan cikariyor -- hangi kimlik bilgilerine dokunuyor, nereye

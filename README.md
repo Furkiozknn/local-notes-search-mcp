@@ -11,7 +11,7 @@
 <br/>
 
 [![CI](https://github.com/Furkiozknn/local-notes-search-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Furkiozknn/local-notes-search-mcp/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-99-3fb950?logo=pytest&logoColor=white)](tests/)
+[![Tests](https://img.shields.io/badge/tests-107-3fb950?logo=pytest&logoColor=white)](tests/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-8957e5)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776ab?logo=python&logoColor=white)](.python-version)
 [![MCP](https://img.shields.io/badge/MCP-server-000000?logo=anthropic&logoColor=white)](https://modelcontextprotocol.io)
@@ -207,6 +207,12 @@ Register `local_notes_search.py` as a **stdio** MCP server:
 }
 ```
 
+Without a clone, straight from GitHub (measured: 29 s to the first `tools/list` with an empty uv cache, 11 s warm; it is not on PyPI):
+
+```json
+{"mcpServers": {"local-notes-search": {"command": "uvx", "args": ["--from", "git+https://github.com/Furkiozknn/local-notes-search-mcp", "local-notes-search-mcp"]}}}
+```
+
 **The model download, stated plainly.** The embedding model is not bundled.
 Unless it is already cached, the first `index_directory` / `search_notes` call
 downloads it from Hugging Face (fastembed lists it at 0.22 GB) into
@@ -335,7 +341,7 @@ treated the same way.
 uv run pytest -v
 ```
 
-**99 tests, on a deliberate two-tier strategy.** Pure-logic tests (chunking,
+**107 tests, on a deliberate two-tier strategy.** Pure-logic tests (chunking,
 hashing, file walking, `ask_notes`' provider-chain and degradation paths)
 always run — no model, no network, no API key. Tests that need the real
 fastembed model or the sqlite-vec extension **skip honestly** when those can't
@@ -346,8 +352,8 @@ What that means in practice, reported exactly as measured:
 
 | Environment | Result |
 |---|---|
-| ✅ CI (model cached, and *required*: a missing model fails the job instead of skipping; Python 3.10, 3.11, 3.12 and 3.13) | **99 passed** on each of the four — measured 25 September 2026 — including the real end-to-end flow — the fastembed model really loaded, the sqlite-vec extension really ran, and a *"how do I cook pasta"* query really retrieved the recipe note and not the car-maintenance one. |
-| ⚠️ A sandbox with the model download blocked | **85 passed, 14 skipped** — measured 25 September 2026. Every model-free test green, and the model-backed ones skipped with an explicit reason instead of a false pass. |
+| ✅ CI (model cached, and *required*: a missing model fails the job instead of skipping; Python 3.10, 3.11, 3.12 and 3.13) | **107 passed** on each of the four — measured 30 September 2026 — including the real end-to-end flow — the fastembed model really loaded, the sqlite-vec extension really ran, and a *"how do I cook pasta"* query really retrieved the recipe note and not the car-maintenance one. |
+| ⚠️ Windows, model download blocked (`LOCAL_NOTES_SEARCH_OFFLINE=1`, empty cache) | **84 passed, 23 skipped** (15 model-backed + 8 POSIX-only) — measured 30 September 2026. Every model-free test green, and the model-backed ones skipped with an explicit reason instead of a false pass. |
 
 The second row is the honest cost of the first: this suite tells you when it
 *couldn't* verify something.

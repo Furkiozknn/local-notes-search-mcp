@@ -59,3 +59,7 @@ Açık konuda bu depoya ait bulgu yok (tek bulgu `Furkiozknn` deposunun `ci.work
 - Linux/macOS'ta POSIX izin ve symlink testleri bu makinede skip; CI'da koşuyor.
 - `uvx --from git+...` yolu ana dalda `--version` bilmediği için yenileme dalından ölçüldü (bkz. TASARIM).
 - PyPI paketi yayımlanmadı, `uvx local-notes-search-mcp` (PyPI'den) denenemez.
+
+## Yenileme sonrası CI
+
+PR #22, 30 Eylül 2026: `test` (3.12) ve sürüm matrisi (3.10, 3.11, 3.13) dördünde de 107 geçti; `paket`, `mcp-vet` (çıkış 1, kapı ≥2) ve CodeQL yeşil.

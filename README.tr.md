@@ -11,7 +11,7 @@
 <br/>
 
 [![CI](https://github.com/Furkiozknn/local-notes-search-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Furkiozknn/local-notes-search-mcp/actions/workflows/ci.yml)
-[![Testler](https://img.shields.io/badge/testler-99-3fb950?logo=pytest&logoColor=white)](tests/)
+[![Testler](https://img.shields.io/badge/testler-107-3fb950?logo=pytest&logoColor=white)](tests/)
 [![Lisans: MIT](https://img.shields.io/badge/lisans-MIT-8957e5)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776ab?logo=python&logoColor=white)](.python-version)
 [![MCP](https://img.shields.io/badge/MCP-sunucu-000000?logo=anthropic&logoColor=white)](https://modelcontextprotocol.io)
@@ -205,6 +205,12 @@ ortam değişkenlerini ve varsayılan yolları listeler.
 }
 ```
 
+Klon olmadan, doğrudan GitHub'dan (ölçüldü: boş uv önbelleğiyle ilk `tools/list`e 29 sn, sıcak önbellekle 11 sn; PyPI'de değil):
+
+```json
+{"mcpServers": {"local-notes-search": {"command": "uvx", "args": ["--from", "git+https://github.com/Furkiozknn/local-notes-search-mcp", "local-notes-search-mcp"]}}}
+```
+
 **Model indirmesi, açıkça.** Embedding modeli pakete gömülü değil. Önbellekte
 yoksa ilk `index_directory` / `search_notes` çağrısı onu Hugging Face'ten
 (fastembed'in listesinde 0.22 GB) `~/.local-notes-search/models` içine indirir;
@@ -337,7 +343,7 @@ bir index de aynı şekilde ele alınır.
 uv run pytest -v
 ```
 
-**99 test, bilinçli iki katmanlı bir strateji üzerine.** Saf mantık testleri
+**107 test, bilinçli iki katmanlı bir strateji üzerine.** Saf mantık testleri
 (chunking, hash, dosya tarama, `ask_notes`'un sağlayıcı zinciri ve
 degradasyon yolları) her zaman çalışır — model yok, ağ yok, API anahtarı yok.
 Gerçek fastembed modelini veya sqlite-vec eklentisini gerektiren testler,
@@ -348,8 +354,8 @@ Pratikte ne anlama geldiği, ölçüldüğü gibi:
 
 | Ortam | Sonuç |
 |---|---|
-| ✅ CI (model önbellekte ve *zorunlu*: model yoksa testler skip olmaz, iş kırmızı yanar; Python 3.10, 3.11, 3.12 ve 3.13) | **99 geçti**, dördünde de — 25 Eylül 2026'da ölçüldü — gerçek uçtan uca akış dahil — fastembed modeli gerçekten yüklendi, sqlite-vec eklentisi gerçekten çalıştı ve *"how do I cook pasta"* sorgusu gerçekten tarif notunu buldu, araba bakımı notunu değil. |
-| ⚠️ Model indirmesi engellenmiş bir sandbox | **85 geçti, 14 skip** — 25 Eylül 2026'da ölçüldü. Modele ihtiyaç duymayan her test yeşil; modele dayananlar ise sahte bir geçiş yerine açık bir gerekçeyle skip edildi. |
+| ✅ CI (model önbellekte ve *zorunlu*: model yoksa testler skip olmaz, iş kırmızı yanar; Python 3.10, 3.11, 3.12 ve 3.13) | **107 geçti**, dördünde de — 30 Eylül 2026'da ölçüldü — gerçek uçtan uca akış dahil — fastembed modeli gerçekten yüklendi, sqlite-vec eklentisi gerçekten çalıştı ve *"how do I cook pasta"* sorgusu gerçekten tarif notunu buldu, araba bakımı notunu değil. |
+| ⚠️ Windows, model indirmesi engelli (`LOCAL_NOTES_SEARCH_OFFLINE=1`, boş önbellek) | **84 geçti, 23 skip** (15 modele dayanan + 8 yalnız-POSIX) — 30 Eylül 2026'da ölçüldü. Modele ihtiyaç duymayan her test yeşil; modele dayananlar ise sahte bir geçiş yerine açık bir gerekçeyle skip edildi. |
 
 İkinci satır, birincinin dürüst bedeli: bu suite, bir şeyi *doğrulayamadığında*
 size bunu söylüyor.

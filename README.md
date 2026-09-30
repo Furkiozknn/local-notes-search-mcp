@@ -4,9 +4,6 @@
 
 # 🔎 local-notes-search-mcp
 
-<p align="center"><img src="docs/reel/reel.gif" alt="local-notes-search-mcp - 15-second motion reel" width="720"></p>
-<p align="center"><sub><a href="docs/reel/reel.mp4">MP4 version with sound</a></sub></p>
-
 ### **Semantic search over your own files — as an MCP server.**
 
 *Ask questions in plain language instead of guessing the exact keyword you typed six months ago.*
@@ -14,10 +11,76 @@
 <br/>
 
 [![CI](https://github.com/Furkiozknn/local-notes-search-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Furkiozknn/local-notes-search-mcp/actions/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-99-3fb950?logo=pytest&logoColor=white)](tests/)
+[![Tests](https://img.shields.io/badge/tests-107-3fb950?logo=pytest&logoColor=white)](tests/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-8957e5)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776ab?logo=python&logoColor=white)](.python-version)
 [![MCP](https://img.shields.io/badge/MCP-server-000000?logo=anthropic&logoColor=white)](https://modelcontextprotocol.io)
+
+**🇹🇷 [Türkçe README →](README.tr.md)**
+
+</div>
+
+---
+
+## Try it in a minute
+
+```bash
+git clone https://github.com/Furkiozknn/local-notes-search-mcp.git
+cd local-notes-search-mcp
+uv sync && uv run python examples/stdio_demo.py
+```
+
+That starts the server, talks to it over stdio the way an MCP client does, and
+searches the fixture notes in [`examples/notes/`](examples/notes/) — five short
+files written for this repository, **not anyone's real notes** — into a
+throwaway index in a temp directory. Nothing in `~/.local-notes-search` is
+touched. Measured on the author's machine (Windows 11, Python 3.12, uv 0.12.5,
+30 September 2026): `uv sync` with an empty uv cache 22 s, the one-time model
+download about 20 s, the demo itself about 19 s. The first run needs network for
+that download; see [the model download](#-quickstart) if you want it as an
+explicit step.
+
+<p align="center"><img src="docs/demo/demo.gif" alt="Terminal recording of examples/stdio_demo.py: initialize, tools/list, index_directory, two searches" width="720"></p>
+<p align="center"><sub>Real output, replayed. <a href="docs/demo/demo.mp4">MP4</a> · <a href="docs/demo/komutlar.txt">the plain-text record</a> (command, output, exit code) · regenerate with <code>python scripts/demo-uret.py</code></sub></p>
+
+The part of that output that matters (verbatim; the tools answer in Turkish, the
+author's working language, and `distance` is the sqlite-vec default L2 distance — lower is
+closer, and it is not a 0–1 score):
+
+```text
+examples/notes indexlendi: 5 dosya (yeni/değişmiş), 0 değişmemiş dosya atlandı, 5 yeni chunk, 0 silinmiş dosya temizlendi.
+
+search_notes("what did I decide about the auth redesign?", top_k=2)
+2 sonuç:
+
+--- examples/notes/2026-08-decisions.md:1-10 (distance=4.5000) ---
+# Decisions, August 2026
+
+## Auth redesign
+Decided: session cookies instead of JWT. The refresh-token rotation story was
+getting worse than the problem it solved, and every client we ship is a browser.
+[...]
+
+--- examples/notes/meeting-2026-07-30.md:1-7 (distance=5.0842) ---
+# Meeting, 30 July
+[...]
+- Agreed to revisit the login flow after the billing migration ships.
+```
+
+The query says "auth redesign"; the note says "session cookies instead of JWT".
+The second pasta query in the full record finds a Turkish note for an English
+question, which is what the multilingual model is for.
+
+### When to use it, and when not to
+
+| Use it when | Do not use it when |
+|---|---|
+| you remember *what* a note said but not the words you typed | you know the exact string: `ripgrep` is faster and exact |
+| you want your MCP client (Claude Code, Claude Desktop, …) to search your own folders with `file:line` answers | you need a shared, multi-user or hosted index: this is one local SQLite file, single writer |
+| the notes must not leave the machine and you have no API key to give | you need the ranking to be tuned per corpus: one fixed embedding model, no re-ranking |
+| Turkish, English or mixed notes | your files are PDFs, Word or images: only text formats are read ([list](#-quickstart)) |
+
+<p align="center">
 
 [![No API key](https://img.shields.io/badge/indexing%20%2B%20search-no%20API%20key-3fb950)](#-why-this-architecture)
 [![Offline](https://img.shields.io/badge/retrieval-100%25%20offline-3fb950)](#-why-this-architecture)
@@ -26,48 +89,16 @@
 [![Storage](https://img.shields.io/badge/storage-sqlite--vec-003b57?logo=sqlite&logoColor=white)](https://github.com/asg017/sqlite-vec)
 [![Embeddings](https://img.shields.io/badge/embeddings-fastembed%20ONNX-ff6b35)](https://github.com/qdrant/fastembed)
 
-<br/>
-
-**🇹🇷 [Türkçe README →](README.tr.md)**
-
-</div>
-
----
-
-## ✨ What it does
-
-Point it at a folder — project notes, a scattered `Claude projeler/` tree, a docs
-directory — and search it by **meaning**, not by exact string match.
-
-```text
-▸ index_directory("C:/Users/you/Desktop/notes")
-  ✅ 128 files indexed · 941 chunks · 12 unchanged (skipped)
-
-▸ search_notes("what did I decide about the auth redesign?")
-  🎯 3 results:
-
-  ── notes/2026-08-decisions.md:12-24  ·  distance 0.31 ──────────────
-     ## Auth redesign
-     Decided: session-based instead of JWT, because the refresh-token
-     rotation story was getting worse than the problem it solved...
-
-  ── notes/meeting-2026-07-30.md:88-101  ·  distance 0.44 ────────────
-     ...agreed to revisit auth after the billing migration ships.
-```
-
-<sub>Illustrative, condensed. The tools answer in Turkish, the author's working
-language — the real first line reads `… indexlendi: 128 dosya (yeni/değişmiş),
-12 değişmemiş dosya atlandı, 941 yeni chunk, 0 silinmiş dosya temizlendi.`</sub>
-
-Nothing in that flow touched the network. No OpenAI key, no Pinecone account,
-no Docker container, no `docker compose up` before you can search your own
-notes.
+</p>
 
 Want a synthesized answer instead of a result list? 💡 **`ask_notes`** runs the
 exact same retrieval, then has an LLM answer *grounded only in the retrieved
 chunks*, with `file:line` sources attached. It's strictly **opt-in** — set
 `GROQ_API_KEY` or `MISTRAL_API_KEY` and it synthesizes; set neither and it
 quietly returns the raw matches instead of failing.
+
+Indexing and search need no API key, no Docker container and no daemon. The one
+network call they can make is the one-time model download.
 
 ---
 
@@ -150,18 +181,10 @@ cd local-notes-search-mcp
 uv sync
 ```
 
-Try it before wiring up a client — index this repository into a throwaway
-index and ask it something (the first run downloads the model, see below):
-
-```bash
-LOCAL_NOTES_SEARCH_DB=/tmp/lns-try.db uv run python -c "
-import asyncio, local_notes_search as l
-print(asyncio.run(l.index_directory('.')))
-print(asyncio.run(l.search_notes('which files are never indexed', top_k=2)))"
-```
-
-If the model cannot be downloaded, that prints an error naming the fix
-(network access, or `--download-model` + `LOCAL_NOTES_SEARCH_OFFLINE`).
+The demo above is the quickest check that everything works. If the model cannot be
+downloaded it prints an error naming the fix (network access, or
+`--download-model` + `LOCAL_NOTES_SEARCH_OFFLINE`); `uv run local-notes-search-mcp --help`
+lists the tools, the environment variables and the default paths.
 
 <details>
 <summary><b>🔌 Wire it into an MCP client (Claude Code, Claude Desktop, …)</b></summary>
@@ -182,6 +205,12 @@ Register `local_notes_search.py` as a **stdio** MCP server:
     }
   }
 }
+```
+
+Without a clone, straight from GitHub (measured: 29 s to the first `tools/list` with an empty uv cache, 11 s warm; it is not on PyPI):
+
+```json
+{"mcpServers": {"local-notes-search": {"command": "uvx", "args": ["--from", "git+https://github.com/Furkiozknn/local-notes-search-mcp", "local-notes-search-mcp"]}}}
 ```
 
 **The model download, stated plainly.** The embedding model is not bundled.
@@ -312,7 +341,7 @@ treated the same way.
 uv run pytest -v
 ```
 
-**99 tests, on a deliberate two-tier strategy.** Pure-logic tests (chunking,
+**107 tests, on a deliberate two-tier strategy.** Pure-logic tests (chunking,
 hashing, file walking, `ask_notes`' provider-chain and degradation paths)
 always run — no model, no network, no API key. Tests that need the real
 fastembed model or the sqlite-vec extension **skip honestly** when those can't
@@ -323,8 +352,8 @@ What that means in practice, reported exactly as measured:
 
 | Environment | Result |
 |---|---|
-| ✅ CI (model cached, and *required*: a missing model fails the job instead of skipping; Python 3.10, 3.11, 3.12 and 3.13) | **99 passed** on each of the four — measured 25 September 2026 — including the real end-to-end flow — the fastembed model really loaded, the sqlite-vec extension really ran, and a *"how do I cook pasta"* query really retrieved the recipe note and not the car-maintenance one. |
-| ⚠️ A sandbox with the model download blocked | **85 passed, 14 skipped** — measured 25 September 2026. Every model-free test green, and the model-backed ones skipped with an explicit reason instead of a false pass. |
+| ✅ CI (model cached, and *required*: a missing model fails the job instead of skipping; Python 3.10, 3.11, 3.12 and 3.13) | **107 passed** on each of the four — measured 30 September 2026 — including the real end-to-end flow — the fastembed model really loaded, the sqlite-vec extension really ran, and a *"how do I cook pasta"* query really retrieved the recipe note and not the car-maintenance one. |
+| ⚠️ Windows, model download blocked (`LOCAL_NOTES_SEARCH_OFFLINE=1`, empty cache) | **84 passed, 23 skipped** (15 model-backed + 8 POSIX-only) — measured 30 September 2026. Every model-free test green, and the model-backed ones skipped with an explicit reason instead of a false pass. |
 
 The second row is the honest cost of the first: this suite tells you when it
 *couldn't* verify something.

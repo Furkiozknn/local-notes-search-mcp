@@ -4,6 +4,26 @@ All notable changes to this project. Versions follow [semver](https://semver.org
 the version lives in `pyproject.toml` and `server.json`, and the release
 workflow (`.github/workflows/yayinla.yml`) refuses a tag that does not match it.
 
+## [Unreleased]
+
+### First-run experience
+
+- `examples/stdio_demo.py` plus fixture notes in `examples/notes/`: one command
+  starts the server over stdio, indexes the fixtures into a throwaway index and
+  prints the real answers. The README's terminal demo is recorded from it
+  (`scripts/demo-uret.py`, `docs/demo/komutlar.txt`).
+- `local-notes-search-mcp --help` now lists the tools, the environment variables
+  with their default paths and a client registration example; `--version` added.
+- `--download-model` says what it fetches (about 0.22 GB) and no longer prints
+  ~150 lines of HTTP client logging.
+- `index_directory`: a path that is a file now says so instead of "not a
+  directory or not found"; a directory with nothing indexable (typo, only
+  images) says which extensions were looked for instead of reporting a bare
+  success. The counts sentence the tests and clients read is unchanged.
+- The offline model error no longer contains a doubled full stop.
+- README: the invented example output and the reel with no generator in the
+  repository were removed; 8 new tests (107 in total).
+
 ## [0.1.0] - 2026-09-25
 
 First tagged release. Everything below is what 0.1.0 ships; there is no earlier

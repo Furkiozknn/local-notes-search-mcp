@@ -11,10 +11,74 @@
 <br/>
 
 [![CI](https://github.com/Furkiozknn/local-notes-search-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Furkiozknn/local-notes-search-mcp/actions/workflows/ci.yml)
-[![Testler](https://img.shields.io/badge/testler-99-3fb950?logo=pytest&logoColor=white)](tests/)
+[![Testler](https://img.shields.io/badge/testler-107-3fb950?logo=pytest&logoColor=white)](tests/)
 [![Lisans: MIT](https://img.shields.io/badge/lisans-MIT-8957e5)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776ab?logo=python&logoColor=white)](.python-version)
 [![MCP](https://img.shields.io/badge/MCP-sunucu-000000?logo=anthropic&logoColor=white)](https://modelcontextprotocol.io)
+
+**🇬🇧 [English README →](README.md)**
+
+</div>
+
+---
+
+## Bir dakikada deneyin
+
+```bash
+git clone https://github.com/Furkiozknn/local-notes-search-mcp.git
+cd local-notes-search-mcp
+uv sync && uv run python examples/stdio_demo.py
+```
+
+Bu, sunucuyu başlatır, bir MCP istemcisi gibi stdio üzerinden konuşur ve
+[`examples/notes/`](examples/notes/) altındaki örnek notlarda arar: bu depo için
+yazılmış beş kısa dosya, **kimsenin gerçek notu değil**; index geçici bir
+klasörde durur, `~/.local-notes-search`'e dokunulmaz. Yazarın makinesinde
+(Windows 11, Python 3.12, uv 0.12.5, 30 Eylül 2026) ölçüldü: boş uv önbelleğiyle
+`uv sync` 22 sn, tek seferlik model indirmesi yaklaşık 20 sn, demonun kendisi
+yaklaşık 19 sn. İlk çalıştırma bu indirme için ağ ister; indirmeyi ayrı bir adım
+yapmak için [Hızlı başlangıç](#-hızlı-başlangıç)'a bakın.
+
+<p align="center"><img src="docs/demo/demo.gif" alt="examples/stdio_demo.py terminal kaydı: initialize, tools/list, index_directory, iki arama" width="720"></p>
+<p align="center"><sub>Gerçek çıktı, yeniden oynatılmış. <a href="docs/demo/demo.mp4">MP4</a> · <a href="docs/demo/komutlar.txt">düz metin kayıt</a> (komut, çıktı, çıkış kodu) · yeniden üretmek için <code>python scripts/demo-uret.py</code></sub></p>
+
+Çıktının önemli kısmı, aynen (araçlar yazarın çalışma dili olan Türkçe cevap verir;
+`distance` sqlite-vec varsayılanı L2 uzaklığıdır — küçük olan yakındır, 0–1 arası bir puan değildir):
+
+```text
+examples/notes indexlendi: 5 dosya (yeni/değişmiş), 0 değişmemiş dosya atlandı, 5 yeni chunk, 0 silinmiş dosya temizlendi.
+
+search_notes("what did I decide about the auth redesign?", top_k=2)
+2 sonuç:
+
+--- examples/notes/2026-08-decisions.md:1-10 (distance=4.5000) ---
+# Decisions, August 2026
+
+## Auth redesign
+Decided: session cookies instead of JWT. The refresh-token rotation story was
+getting worse than the problem it solved, and every client we ship is a browser.
+[...]
+
+--- examples/notes/meeting-2026-07-30.md:1-7 (distance=5.0842) ---
+# Meeting, 30 July
+[...]
+- Agreed to revisit the login flow after the billing migration ships.
+```
+
+Sorgu "auth redesign" diyor; not "session cookies instead of JWT" diyor. Tam kayıttaki
+ikinci sorgu ("how do I cook pasta") İngilizce bir soruya Türkçe bir not da buluyor;
+çok dilli modelin işi bu.
+
+### Ne zaman kullanılır, ne zaman kullanılmaz
+
+| Kullanın | Kullanmayın |
+|---|---|
+| bir notun *ne* dediğini hatırlıyor ama yazdığınız kelimeyi hatırlamıyorsanız | tam metni biliyorsanız: `ripgrep` daha hızlı ve kesindir |
+| MCP istemcinizin (Claude Code, Claude Desktop, …) kendi klasörlerinizde `dosya:satır` cevaplarıyla arama yapmasını istiyorsanız | paylaşımlı, çok kullanıcılı ya da barındırılan bir index gerekiyorsa: bu tek bir yerel SQLite dosyasıdır, tek yazar |
+| notlar makineden çıkmamalıysa ve verecek API anahtarınız yoksa | derlem başına ayarlı sıralama gerekiyorsa: tek sabit embedding modeli, yeniden sıralama yok |
+| Türkçe, İngilizce ya da karışık notlar | dosyalarınız PDF, Word ya da görselse: yalnızca metin biçimleri okunur ([liste](#-hızlı-başlangıç)) |
+
+<p align="center">
 
 [![API anahtarı yok](https://img.shields.io/badge/index%20%2B%20arama-API%20anahtar%C4%B1%20yok-3fb950)](#-neden-bu-mimari)
 [![Çevrimdışı](https://img.shields.io/badge/retrieval-%25100%20%C3%A7evrimd%C4%B1%C5%9F%C4%B1-3fb950)](#-neden-bu-mimari)
@@ -23,49 +87,16 @@
 [![Depolama](https://img.shields.io/badge/depolama-sqlite--vec-003b57?logo=sqlite&logoColor=white)](https://github.com/asg017/sqlite-vec)
 [![Embedding](https://img.shields.io/badge/embedding-fastembed%20ONNX-ff6b35)](https://github.com/qdrant/fastembed)
 
-<br/>
-
-**🇬🇧 [English README →](README.md)**
-
-</div>
-
----
-
-## ✨ Ne yapar
-
-Bir klasörü gösterin — proje notlarınız, dağınık bir `Claude projeler/` ağacı,
-bir dokümantasyon dizini — ve içinde **anlama göre** arayın, birebir kelime
-eşleşmesine göre değil.
-
-```text
-▸ index_directory("C:/Users/siz/Desktop/notlar")
-  ✅ 128 dosya indexlendi · 941 chunk · 12 değişmemiş (atlandı)
-
-▸ search_notes("auth yeniden tasarımı hakkında ne karar vermiştim?")
-  🎯 3 sonuç:
-
-  ── notlar/2026-08-kararlar.md:12-24  ·  mesafe 0.31 ────────────────
-     ## Auth yeniden tasarımı
-     Kararlaştırdık: JWT yerine session-based, çünkü refresh-token
-     rotasyonu çözdüğü problemden daha kötü hale gelmişti...
-
-  ── notlar/toplanti-2026-07-30.md:88-101  ·  mesafe 0.44 ────────────
-     ...auth konusunu billing migration bittikten sonra tekrar açacağız.
-```
-
-<sub>Temsilî ve kısaltılmış. Gerçek ilk satır şöyle: `… indexlendi: 128 dosya
-(yeni/değişmiş), 12 değişmemiş dosya atlandı, 941 yeni chunk, 0 silinmiş dosya
-temizlendi.`</sub>
-
-Bu akışın hiçbir adımı ağa çıkmadı. OpenAI anahtarı yok, Pinecone hesabı yok,
-Docker konteyneri yok, kendi notlarınızda arama yapmak için önce
-`docker compose up` yazmanız gerekmiyor.
+</p>
 
 Sonuç listesi yerine sentezlenmiş bir cevap mı istiyorsunuz? 💡 **`ask_notes`**
 tam olarak aynı retrieval'ı çalıştırır, ardından bir LLM'e *sadece bulunan
 parçalara dayanarak* cevap verdirir ve `dosya:satır` kaynaklarını ekler.
 Tamamen **opsiyoneldir** — `GROQ_API_KEY` ya da `MISTRAL_API_KEY` ayarlıysa
 sentezler; hiçbiri yoksa hata vermeden ham eşleşmeleri döner.
+
+Index ve arama için API anahtarı, Docker konteyneri ya da daemon gerekmez. Ağa
+çıkabilen tek çağrı, tek seferlik model indirmesidir.
 
 ---
 
@@ -148,18 +179,10 @@ cd local-notes-search-mcp
 uv sync
 ```
 
-Bir istemciye bağlamadan önce deneyin — bu depoyu geçici bir index'e alıp bir
-soru sorun (ilk çalıştırma modeli indirir, aşağıya bakın):
-
-```bash
-LOCAL_NOTES_SEARCH_DB=/tmp/lns-try.db uv run python -c "
-import asyncio, local_notes_search as l
-print(asyncio.run(l.index_directory('.')))
-print(asyncio.run(l.search_notes('which files are never indexed', top_k=2)))"
-```
-
-Model indirilemezse çıktı, çözümü söyleyen bir hatadır (ağ erişimi ya da
-`--download-model` + `LOCAL_NOTES_SEARCH_OFFLINE`).
+Yukarıdaki demo her şeyin çalıştığını görmenin en hızlı yoludur. Model indirilemezse
+çözümü söyleyen bir hata basar (ağ erişimi ya da `--download-model` +
+`LOCAL_NOTES_SEARCH_OFFLINE`); `uv run local-notes-search-mcp --help` araçları,
+ortam değişkenlerini ve varsayılan yolları listeler.
 
 <details>
 <summary><b>🔌 MCP istemcinize bağlayın (Claude Code, Claude Desktop, …)</b></summary>
@@ -180,6 +203,12 @@ Model indirilemezse çıktı, çözümü söyleyen bir hatadır (ağ erişimi ya
     }
   }
 }
+```
+
+Klon olmadan, doğrudan GitHub'dan (ölçüldü: boş uv önbelleğiyle ilk `tools/list`e 29 sn, sıcak önbellekle 11 sn; PyPI'de değil):
+
+```json
+{"mcpServers": {"local-notes-search": {"command": "uvx", "args": ["--from", "git+https://github.com/Furkiozknn/local-notes-search-mcp", "local-notes-search-mcp"]}}}
 ```
 
 **Model indirmesi, açıkça.** Embedding modeli pakete gömülü değil. Önbellekte
@@ -314,7 +343,7 @@ bir index de aynı şekilde ele alınır.
 uv run pytest -v
 ```
 
-**99 test, bilinçli iki katmanlı bir strateji üzerine.** Saf mantık testleri
+**107 test, bilinçli iki katmanlı bir strateji üzerine.** Saf mantık testleri
 (chunking, hash, dosya tarama, `ask_notes`'un sağlayıcı zinciri ve
 degradasyon yolları) her zaman çalışır — model yok, ağ yok, API anahtarı yok.
 Gerçek fastembed modelini veya sqlite-vec eklentisini gerektiren testler,
@@ -325,8 +354,8 @@ Pratikte ne anlama geldiği, ölçüldüğü gibi:
 
 | Ortam | Sonuç |
 |---|---|
-| ✅ CI (model önbellekte ve *zorunlu*: model yoksa testler skip olmaz, iş kırmızı yanar; Python 3.10, 3.11, 3.12 ve 3.13) | **99 geçti**, dördünde de — 25 Eylül 2026'da ölçüldü — gerçek uçtan uca akış dahil — fastembed modeli gerçekten yüklendi, sqlite-vec eklentisi gerçekten çalıştı ve *"how do I cook pasta"* sorgusu gerçekten tarif notunu buldu, araba bakımı notunu değil. |
-| ⚠️ Model indirmesi engellenmiş bir sandbox | **85 geçti, 14 skip** — 25 Eylül 2026'da ölçüldü. Modele ihtiyaç duymayan her test yeşil; modele dayananlar ise sahte bir geçiş yerine açık bir gerekçeyle skip edildi. |
+| ✅ CI (model önbellekte ve *zorunlu*: model yoksa testler skip olmaz, iş kırmızı yanar; Python 3.10, 3.11, 3.12 ve 3.13) | **107 geçti**, dördünde de — 30 Eylül 2026'da ölçüldü — gerçek uçtan uca akış dahil — fastembed modeli gerçekten yüklendi, sqlite-vec eklentisi gerçekten çalıştı ve *"how do I cook pasta"* sorgusu gerçekten tarif notunu buldu, araba bakımı notunu değil. |
+| ⚠️ Windows, model indirmesi engelli (`LOCAL_NOTES_SEARCH_OFFLINE=1`, boş önbellek) | **84 geçti, 23 skip** (15 modele dayanan + 8 yalnız-POSIX) — 30 Eylül 2026'da ölçüldü. Modele ihtiyaç duymayan her test yeşil; modele dayananlar ise sahte bir geçiş yerine açık bir gerekçeyle skip edildi. |
 
 İkinci satır, birincinin dürüst bedeli: bu suite, bir şeyi *doğrulayamadığında*
 size bunu söylüyor.

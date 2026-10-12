@@ -967,8 +967,11 @@ GROQ_API_KEY or MISTRAL_API_KEY), list_indexed_files, remove_directory.
 Environment:
   {DB_ENV}
       index file (default {DEFAULT_DB_PATH})
+  LOCAL_NOTES_SEARCH_MODEL
+      embedding model, any fastembed-supported name
+      (default sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2)
   {MODEL_DIR_ENV}
-      model cache (default {DEFAULT_MODEL_DIR})
+      model cache (default {DEFAULT_MODEL_DIR}; falls back to FASTEMBED_CACHE_PATH)
   {OFFLINE_ENV}
       1 = never download; run --download-model once first
   {ALLOWED_ROOTS_ENV}

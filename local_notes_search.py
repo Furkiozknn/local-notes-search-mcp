@@ -50,7 +50,8 @@ from typing import Annotated, Literal
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
-from pydantic import Field
+from mcp.types import CallToolResult, TextContent, ToolAnnotations
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -669,6 +670,73 @@ def index_file(conn: sqlite3.Connection, path: Path) -> int:
     return len(chunks)
 
 
+# --- MCP tool annotations and structured results --------------------------
+# Behaviour hints (MCP 2025-03-26+). Clients may use them to decide what needs
+# a confirmation prompt, so they say what each tool really does to the user's
+# environment. None of these tools touches the user's files: the only state
+# any of them changes is the index database.
+#   index_directory  writes the index; re-running it on unchanged files is a
+#                    no-op, so it is idempotent. Closed world: the one possible
+#                    network call is the one-time model download.
+#   search/list      read the index only.
+#   ask_notes        reads the index, then (with GROQ_API_KEY/MISTRAL_API_KEY)
+#                    sends the retrieved chunks to an LLM provider: open world.
+#   remove_directory deletes index entries - destructive for the index, though
+#                    never for the files themselves; repeating it changes nothing.
+INDEX_ANNOTATIONS = ToolAnnotations(
+    read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False
+)
+SEARCH_ANNOTATIONS = ToolAnnotations(read_only_hint=True, idempotent_hint=True, open_world_hint=False)
+LIST_ANNOTATIONS = ToolAnnotations(read_only_hint=True, idempotent_hint=True, open_world_hint=False)
+ASK_ANNOTATIONS = ToolAnnotations(read_only_hint=True, idempotent_hint=False, open_world_hint=True)
+REMOVE_ANNOTATIONS = ToolAnnotations(
+    read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=False
+)
+
+
+class SearchHit(BaseModel):
+    """One retrieved chunk, as `search_notes` returns it in structuredContent."""
+
+    path: str
+    start_line: int
+    end_line: int
+    snippet: str = Field(description="the chunk text, cut at 400 characters like the text output")
+    distance: float | None = Field(description="vector distance; null for a keyword-only match")
+    match: Literal["vector", "keyword", "both"]
+
+
+class SearchResults(BaseModel):
+    query: str
+    mode: Literal["hybrid", "vector", "keyword"]
+    count: int
+    results: list[SearchHit]
+    notice: str = Field(default="", description="stale-embedder or fallback notice, empty if none")
+
+
+class IndexedFile(BaseModel):
+    path: str
+    chunk_count: int
+    indexed_at: str
+    embedder: str | None
+    needs_reindex: bool = Field(description="embedded by a different model/fastembed version")
+
+
+class IndexedFiles(BaseModel):
+    count: int = Field(description="files in the index under path_prefix")
+    shown: int = Field(description=f"files listed below (at most {MAX_LISTED_FILES})")
+    files: list[IndexedFile]
+
+
+def _text_result(text: str, structured: BaseModel | None = None, *, is_error: bool = False) -> CallToolResult:
+    """One result, two views: the exact text this tool always returned, and
+    (unless it is an error) the same facts as structuredContent."""
+    return CallToolResult(
+        content=[TextContent(type="text", text=text)],
+        structured_content=structured.model_dump(mode="json") if structured is not None else None,
+        is_error=is_error,
+    )
+
+
 # --- MCP tools -----------------------------------------------------------
 # Each tool is a thin async wrapper around a synchronous `_*_sync` function,
 # offloaded via asyncio.to_thread - file I/O, ONNX embedding (including a
@@ -736,7 +804,7 @@ def _index_directory_sync(path: str, extensions: list[str] | None) -> str:
         conn.close()
 
 
-@mcp.tool()
+@mcp.tool(title="Index a directory", annotations=INDEX_ANNOTATIONS)
 async def index_directory(path: str, extensions: list[str] | None = None) -> str:
     """Index (or re-index) a local directory for semantic search. Walks
     recursively, skips .git/node_modules/.venv/etc and files >2MB, and
@@ -891,8 +959,9 @@ def _describe_match(distance: float | None, match: str) -> str:
 def _format_results(rows: list[tuple]) -> str:
     lines = [f"{len(rows)} sonuç:"]
     for file_path, start_line, end_line, text, distance, match in rows:
-        snippet = text if len(text) <= 400 else text[:400] + "…"
-        lines.append(f"\n--- {file_path}:{start_line}-{end_line} ({_describe_match(distance, match)}) ---\n{snippet}")
+        lines.append(
+            f"\n--- {file_path}:{start_line}-{end_line} ({_describe_match(distance, match)}) ---\n{_snippet(text)}"
+        )
     return "\n".join(lines)
 
 
@@ -906,29 +975,64 @@ NO_RESULTS_MESSAGE = "Sonuç bulunamadı. Önce index_directory ile bir dizin in
 SearchMode = Literal["hybrid", "vector", "keyword"]
 
 
-def _search_notes_sync(query: str, top_k: int, path_prefix: str | None, mode: str = "hybrid") -> str:
+def _snippet(text: str) -> str:
+    return text if len(text) <= 400 else text[:400] + "…"
+
+
+def _search_result(query: str, top_k: int, path_prefix: str | None, mode: str = "hybrid") -> CallToolResult:
     retrieved = _retrieve(query, top_k, path_prefix, mode)
     if isinstance(retrieved, str):
-        return retrieved
+        return _text_result(retrieved, is_error=True)
     rows, notice = retrieved
-    if not rows:
-        return notice + NO_RESULTS_MESSAGE
-    return notice + _format_results(rows)
+    text = notice + (_format_results(rows) if rows else NO_RESULTS_MESSAGE)
+    structured = SearchResults(
+        query=query,
+        mode=mode if mode in SEARCH_MODES else "hybrid",
+        count=len(rows),
+        results=[
+            SearchHit(path=fp, start_line=sl, end_line=el, snippet=_snippet(chunk), distance=dist, match=match)
+            for fp, sl, el, chunk, dist, match in rows
+        ],
+        notice=notice.strip(),
+    )
+    return _text_result(text, structured)
 
 
-@mcp.tool()
+def _search_notes_sync(query: str, top_k: int, path_prefix: str | None, mode: str = "hybrid") -> str:
+    return _search_result(query, top_k, path_prefix, mode).content[0].text
+
+
+SEARCH_NOTES_DESCRIPTION = """Search across everything indexed so far. Returns the top matching
+chunks with file path, line range, and a relevance-ordered snippet - not
+just a bag of file names. top_k is 1-50.
+
+mode: "hybrid" (default) fuses semantic (vector) and keyword (BM25)
+rankings, so both "how do I cook pasta" and an exact error code or
+identifier are found; "vector" is meaning only; "keyword" is exact words
+only and needs no embedding model.
+
+The same results also come back as structuredContent (path, start_line,
+end_line, snippet, distance, match per hit), so a client can cite file:line
+without parsing the text."""
+
+
 async def search_notes(
     query: str, top_k: TopK = 5, path_prefix: str | None = None, mode: SearchMode = "hybrid"
 ) -> str:
-    """Search across everything indexed so far. Returns the top matching
-    chunks with file path, line range, and a relevance-ordered snippet - not
-    just a bag of file names. top_k is 1-50.
-
-    mode: "hybrid" (default) fuses semantic (vector) and keyword (BM25)
-    rankings, so both "how do I cook pasta" and an exact error code or
-    identifier are found; "vector" is meaning only; "keyword" is exact words
-    only and needs no embedding model."""
+    """The text of the `search_notes` tool's result. Kept as a plain function
+    for in-process callers and tests; the MCP tool (`search_notes_tool`) adds
+    the structured view of the same retrieval."""
     return await asyncio.to_thread(_search_notes_sync, query, top_k, path_prefix, mode)
+
+
+@mcp.tool(
+    name="search_notes", title="Search your notes", description=SEARCH_NOTES_DESCRIPTION,
+    annotations=SEARCH_ANNOTATIONS,
+)
+async def search_notes_tool(
+    query: str, top_k: TopK = 5, path_prefix: str | None = None, mode: SearchMode = "hybrid"
+) -> Annotated[CallToolResult, SearchResults]:
+    return await asyncio.to_thread(_search_result, query, top_k, path_prefix, mode)
 
 
 # --- ask_notes: retrieve + LLM synthesis --------------------------------
@@ -1037,7 +1141,7 @@ async def _ask_notes_async(question: str, top_k: int, path_prefix: str | None, m
     return f"{notice}{answer}\n\nKaynaklar:\n{sources}"
 
 
-@mcp.tool()
+@mcp.tool(title="Ask about your notes", annotations=ASK_ANNOTATIONS)
 async def ask_notes(
     question: str, top_k: TopK = 5, path_prefix: str | None = None, mode: SearchMode = "hybrid"
 ) -> str:
@@ -1052,7 +1156,7 @@ async def ask_notes(
     return await _ask_notes_async(question, top_k, path_prefix, mode)
 
 
-def _list_indexed_files_sync(path_prefix: str | None) -> str:
+def _list_result(path_prefix: str | None) -> CallToolResult:
     conn = get_connection()
     try:
         rows = conn.execute("SELECT path, chunk_count, indexed_at, embedder FROM files ORDER BY path").fetchall()
@@ -1064,26 +1168,46 @@ def _list_indexed_files_sync(path_prefix: str | None) -> str:
         rows = [r for r in rows if is_under(r[0], prefix)]
 
     if not rows:
-        return "Index boş."
+        return _text_result("Index boş.", IndexedFiles(count=0, shown=0, files=[]))
     lines = [f"{len(rows)} dosya indexlenmiş:"]
     current = embedder_id()
+    files = []
     for path, chunk_count, indexed_at, embedder in rows[:MAX_LISTED_FILES]:
-        stale = f" [yeniden indexlenmeli: {embedder or 'gömme sürümü kayıtsız'}]" if chunk_count and embedder != current else ""
+        needs_reindex = bool(chunk_count and embedder != current)
+        stale = f" [yeniden indexlenmeli: {embedder or 'gömme sürümü kayıtsız'}]" if needs_reindex else ""
         lines.append(f"  {path} - {chunk_count} chunk, {indexed_at}{stale}")
+        files.append(IndexedFile(path=path, chunk_count=chunk_count, indexed_at=indexed_at,
+                                 embedder=embedder, needs_reindex=needs_reindex))
     if len(rows) > MAX_LISTED_FILES:
         lines.append(
             f"  ... ve {len(rows) - MAX_LISTED_FILES} dosya daha (ilk {MAX_LISTED_FILES} gösterildi; "
             "daraltmak için path_prefix kullanın)"
         )
-    return "\n".join(lines)
+    return _text_result("\n".join(lines), IndexedFiles(count=len(rows), shown=len(files), files=files))
 
 
-@mcp.tool()
+def _list_indexed_files_sync(path_prefix: str | None) -> str:
+    return _list_result(path_prefix).content[0].text
+
+
+LIST_INDEXED_FILES_DESCRIPTION = """Lists what's currently in the index - file path, chunk count, last
+indexed time. Useful to check what's covered before searching, or to
+debug a stale/missing result. Also returned as structuredContent
+(count, shown, and per file: path, chunk_count, indexed_at, embedder,
+needs_reindex)."""
+
+
 async def list_indexed_files(path_prefix: str | None = None) -> str:
-    """Lists what's currently in the index - file path, chunk count, last
-    indexed time. Useful to check what's covered before searching, or to
-    debug a stale/missing result."""
+    """The text of the `list_indexed_files` tool's result (see search_notes)."""
     return await asyncio.to_thread(_list_indexed_files_sync, path_prefix)
+
+
+@mcp.tool(
+    name="list_indexed_files", title="List indexed files", description=LIST_INDEXED_FILES_DESCRIPTION,
+    annotations=LIST_ANNOTATIONS,
+)
+async def list_indexed_files_tool(path_prefix: str | None = None) -> Annotated[CallToolResult, IndexedFiles]:
+    return await asyncio.to_thread(_list_result, path_prefix)
 
 
 def _remove_directory_sync(path: str) -> str:
@@ -1100,7 +1224,7 @@ def _remove_directory_sync(path: str) -> str:
     return f"{len(rows)} dosya index'ten kaldırıldı ({prefix} altında)."
 
 
-@mcp.tool()
+@mcp.tool(title="Remove a directory from the index", annotations=REMOVE_ANNOTATIONS)
 async def remove_directory(path: str) -> str:
     """Removes every indexed file/chunk under `path` from the index. The
     index is persistent local state in ~/.local-notes-search/ (or

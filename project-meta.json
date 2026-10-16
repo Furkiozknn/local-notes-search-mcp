@@ -37,7 +37,7 @@
     "semantic-search",
     "sqlite-vec"
   ],
-  "summary": "Ask your own files a question in plain language instead of guessing the keyword you typed six months ago. Semantic search as an MCP server: sqlite-vec + a multilingual ONNX model, incremental re-indexing, answers returned as file:line. No server, no API key, no network at query time. Grounded LLM Q&A is opt-in. 107 tests.",
+  "summary": "Semantic search over your own notes and files as an MCP server: sqlite-vec with a multilingual ONNX model, answers cited as file:line. No API key and no network at query time.",
   "key_features": [
     "Ask your own files a question in plain language instead of guessing the keyword you typed six months ago",
     "Semantic search as an MCP server: sqlite-vec plus a multilingual ONNX model, with incremental re-indexing",

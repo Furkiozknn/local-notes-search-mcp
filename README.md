@@ -185,6 +185,20 @@ outranks one found by either alone.
 | 📋 **`list_indexed_files(path_prefix=None)`** | What's in the index right now: path, chunk count, last-indexed timestamp (first 200 files, with a count of the rest), and a marker on files embedded by another model/fastembed version. Useful before searching, or to debug a stale result. |
 | 🧹 **`remove_directory(path)`** | Drops everything under `path` from the index. **Does not delete your files** — it only cleans the index. |
 
+**What a client sees besides the text.** Every tool carries MCP behaviour hints
+and a title, and `search_notes` / `list_indexed_files` also return their result
+as `structuredContent` with a published `outputSchema` (per hit: `path`,
+`start_line`, `end_line`, `snippet`, `distance`, `match`), so a client can cite
+`file:line` without parsing text. The text output is unchanged. An invalid
+query comes back as an error result (`isError: true`), not as a normal answer.
+
+| Tool | `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` | Why |
+|---|---|---|---|---|---|
+| `index_directory` | false | false | true | false | writes the index only; unchanged files are skipped |
+| `search_notes`, `list_indexed_files` | true | – | true | false | read the index only |
+| `ask_notes` | true | – | false | **true** | sends retrieved chunks to Groq/Mistral when a key is set |
+| `remove_directory` | false | **true** | true | false | deletes index entries (never your files) |
+
 > 🔒 **`index_directory`, `search_notes`, `list_indexed_files` and `remove_directory`
 > require no API key and send nothing anywhere.** The one network call they can
 > make is the one-time embedding-model download described under Quickstart —

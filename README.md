@@ -150,6 +150,29 @@ flowchart LR
     style SKIP fill:#4d3800,stroke:#d4a72c,color:#ffffff
 ```
 
+### Hybrid retrieval: meaning and exact words
+
+Dense vectors are good at *"how do I cook pasta"* finding a note about boiling
+spaghetti, and weak at exact tokens: an error code (`E4127`), a ticket
+(`JIRA-48213`), an identifier. Those embed as noise. So every chunk is also
+written to an SQLite **FTS5** table (BM25 ranking, `unicode61` tokenizer with
+diacritics folded, and the Turkish `ı`/`İ` folded to `i` on both sides, so `calisma`
+and `CALIŞMA` both find `Çalışma`), in the same `index.db` file.
+`search_notes` runs both and fuses the two rankings with **reciprocal rank
+fusion** (`1 / (60 + rank)` summed per chunk, rank-based so a cosine distance and
+a BM25 score never have to be put on one scale). A chunk found by both rankings
+outranks one found by either alone.
+
+- `mode="vector"` gives exactly the ranking from before hybrid search existed.
+- `mode="keyword"` never loads the model, so it works before the model is
+  downloaded and under `LOCAL_NOTES_SEARCH_OFFLINE=1` with an empty cache.
+- Every word of the query is passed to FTS5 as a quoted string, so FTS syntax
+  in a query (`AND`, `NEAR(...)`, `*`, a stray `"`) is searched for, never
+  executed.
+- An index built by an older release gets its keyword table built from the
+  stored chunks on first open; nothing is re-embedded. An SQLite without FTS5
+  falls back to vector search and says so.
+
 ---
 
 ## 🧰 MCP tools
@@ -157,10 +180,24 @@ flowchart LR
 | 🛠️ Tool | What it does |
 |---|---|
 | 🗂️ **`index_directory(path, extensions=None)`** | Recursively indexes a directory. Skips hidden files and directories (`.git`, `.ssh`, `.config`, `.claude.json`, …), `node_modules` / `venv` / `__pycache__` / `dist` / `build`, binary files, anything that is not a regular file, and anything over 2 MB. Unchanged files are skipped via a cheap hash check — unless a different model or fastembed version embedded them, then they are re-embedded; deleted (or no-longer-readable) files are purged from the index. |
-| 🔍 **`search_notes(query, top_k=5, path_prefix=None)`** | Natural-language semantic search. Returns `file:line-range` + snippet + distance score — not just a bag of filenames. `path_prefix` scopes the search to one subtree. `top_k` is 1–50. |
-| 💡 **`ask_notes(question, top_k=5, path_prefix=None)`** | *Optional.* Same retrieval as `search_notes`, then an LLM (Groq → Mistral fallback) answers using **only** those chunks, followed by a `file:line` source list. Needs `GROQ_API_KEY` or `MISTRAL_API_KEY`. With neither key set — or if the provider chain fails — it degrades to returning the raw matches with a note. It never hard-fails just because synthesis wasn't possible. |
+| 🔍 **`search_notes(query, top_k=5, path_prefix=None, mode="hybrid")`** | Natural-language search. Returns `file:line-range` + snippet + distance score (or "keyword match") — not just a bag of filenames. `mode="hybrid"` (default) fuses semantic and keyword (BM25) rankings, `"vector"` is meaning only (the behaviour before hybrid), `"keyword"` is exact words only and needs no embedding model. `path_prefix` scopes the search to one subtree. `top_k` is 1–50. |
+| 💡 **`ask_notes(question, top_k=5, path_prefix=None, mode="hybrid")`** | *Optional.* Same retrieval as `search_notes`, then an LLM (Groq → Mistral fallback) answers using **only** those chunks, followed by a `file:line` source list. Needs `GROQ_API_KEY` or `MISTRAL_API_KEY`. With neither key set — or if the provider chain fails — it degrades to returning the raw matches with a note. It never hard-fails just because synthesis wasn't possible. |
 | 📋 **`list_indexed_files(path_prefix=None)`** | What's in the index right now: path, chunk count, last-indexed timestamp (first 200 files, with a count of the rest), and a marker on files embedded by another model/fastembed version. Useful before searching, or to debug a stale result. |
 | 🧹 **`remove_directory(path)`** | Drops everything under `path` from the index. **Does not delete your files** — it only cleans the index. |
+
+**What a client sees besides the text.** Every tool carries MCP behaviour hints
+and a title, and `search_notes` / `list_indexed_files` also return their result
+as `structuredContent` with a published `outputSchema` (per hit: `path`,
+`start_line`, `end_line`, `snippet`, `distance`, `match`), so a client can cite
+`file:line` without parsing text. The text output is unchanged. An invalid
+query comes back as an error result (`isError: true`), not as a normal answer.
+
+| Tool | `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` | Why |
+|---|---|---|---|---|---|
+| `index_directory` | false | false | true | false | writes the index only; unchanged files are skipped |
+| `search_notes`, `list_indexed_files` | true | – | true | false | read the index only |
+| `ask_notes` | true | – | false | **true** | sends retrieved chunks to Groq/Mistral when a key is set |
+| `remove_directory` | false | **true** | true | false | deletes index entries (never your files) |
 
 > 🔒 **`index_directory`, `search_notes`, `list_indexed_files` and `remove_directory`
 > require no API key and send nothing anywhere.** The one network call they can
@@ -394,7 +431,11 @@ you shouldn't trust.
 - **`path_prefix` filters after the vector search, not inside it.** The
   search over-fetches `4 × top_k` nearest chunks from the whole index and then
   keeps those under the prefix, so a narrow prefix in a large index can return
-  fewer than `top_k` results even when more matching chunks exist.
+  fewer than `top_k` results even when more matching chunks exist. The keyword
+  side of hybrid search over-fetches and filters the same way.
+- **Keyword matching is word-level.** FTS5's `unicode61` tokenizer splits on
+  punctuation, so `ZX-99812` is the two words `ZX` and `99812`, matched as a
+  phrase; there is no stemming (`deploys` does not match `deploy`).
 - **Single-writer SQLite.** Concurrent `index_directory` / `search_notes` calls
   from *separate processes* can collide on writes. The tool is designed around
   a single MCP client session.

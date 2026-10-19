@@ -37,6 +37,7 @@ import hashlib
 import importlib.metadata
 import logging
 import os
+import re
 import sqlite3
 import stat
 import sys
@@ -45,11 +46,12 @@ import warnings
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
-from pydantic import Field
+from mcp.types import CallToolResult, TextContent, ToolAnnotations
+from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
@@ -435,6 +437,93 @@ CREATE TABLE IF NOT EXISTS chunks (
 CREATE INDEX IF NOT EXISTS ix_chunks_file_path ON chunks(file_path);
 """
 
+# Keyword index next to the vectors: an FTS5 table whose rowid is the chunk
+# id. Dense vectors find "how do I cook pasta" in a note about boiling
+# spaghetti, but they are weak at exact tokens - an error code, a ticket
+# number, an identifier - which embed as noise. BM25 over the same chunks
+# catches those, and the two rankings are fused (see _rrf_fuse). unicode61
+# with remove_diacritics folds case and accents, so "Çalışma" matches
+# "calisma" the way a person typing a query expects.
+_FTS_TABLE = "chunks_fts"
+_FTS_SCHEMA = f"CREATE VIRTUAL TABLE {_FTS_TABLE} USING fts5(text, tokenize='unicode61 remove_diacritics 2')"
+
+# Reciprocal-rank-fusion constant from Cormack et al. (2009); 60 is the value
+# the paper and most hybrid-search implementations use. It damps the
+# difference between rank 1 and rank 2 so neither ranking dominates.
+RRF_K = 60
+
+SEARCH_MODES = ("hybrid", "vector", "keyword")
+
+# remove_diacritics folds ç/ş/ğ/ö/ü to c/s/g/o/u, but the Turkish dotless ı
+# and dotted İ are separate letters to Unicode, not accented ones: measured,
+# "calisma" did not match a stored "Çalışma", and "CALIŞMA" (whose I lowers
+# to i) did not either. Both sides of the keyword index - the stored text and
+# the query - are folded the same way, so they meet. The displayed snippet
+# comes from `chunks`, never from this folded copy.
+_KEYWORD_FOLD = str.maketrans({"ı": "i", "İ": "i"})
+
+
+def _fold(text: str) -> str:
+    return text.translate(_KEYWORD_FOLD)
+
+
+def _ensure_fts(conn: sqlite3.Connection) -> bool:
+    """Create the keyword index if this SQLite has FTS5, backfilling it from
+    the chunks of an index built before it existed. Returns False (and the
+    search falls back to vectors only) when FTS5 is not compiled in."""
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (_FTS_TABLE,)
+    ).fetchone()
+    if exists:
+        return True
+    try:
+        conn.execute(_FTS_SCHEMA)
+    except sqlite3.OperationalError as e:  # "no such module: fts5"
+        logger.warning("SQLite FTS5 unavailable, keyword search disabled: %s", e)
+        return False
+    conn.executemany(
+        f"INSERT INTO {_FTS_TABLE} (rowid, text) VALUES (?, ?)",
+        ((cid, _fold(text)) for cid, text in conn.execute("SELECT id, text FROM chunks").fetchall()),
+    )
+    conn.commit()
+    return True
+
+
+def has_fts(conn: sqlite3.Connection) -> bool:
+    return bool(
+        conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (_FTS_TABLE,)).fetchone()
+    )
+
+
+def fts_query(text: str) -> str | None:
+    """A user query as an FTS5 MATCH expression: every word as a quoted
+    string, OR-ed. Quoting is what keeps FTS5 syntax (AND, NEAR, *, column
+    filters, unbalanced quotes) in a query from being parsed as syntax - the
+    query is text to look for, never an expression. None when there is no
+    word to look for."""
+    words = re.findall(r"\w+", _fold(text), flags=re.UNICODE)[:32]
+    if not words:
+        return None
+    return " OR ".join('"' + w.replace('"', '""') + '"' for w in words)
+
+
+def _rrf_fuse(vector_ids: list[int], keyword_ids: list[int], k: int = RRF_K) -> list[tuple[int, float]]:
+    """Reciprocal rank fusion: score(chunk) = sum over rankings of 1/(k + rank).
+
+    Rank-based rather than score-based on purpose: a cosine distance and a
+    BM25 score live on unrelated scales, and normalising one against the
+    other would need tuning per corpus. Ties break by the vector rank, then
+    the keyword rank, then the id, so the order is deterministic."""
+    scores: dict[int, float] = {}
+    best: dict[int, tuple[int, int]] = {}
+    for rank, cid in enumerate(vector_ids, start=1):
+        scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank)
+        best[cid] = (rank, best.get(cid, (0, 10**9))[1])
+    for rank, cid in enumerate(keyword_ids, start=1):
+        scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank)
+        best[cid] = (best.get(cid, (10**9, 0))[0], rank)
+    return sorted(scores.items(), key=lambda kv: (-kv[1], best[kv[0]][0], best[kv[0]][1], kv[0]))
+
 
 def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
     import sqlite_vec
@@ -483,6 +572,7 @@ def get_connection(db_path: Path | None = None) -> sqlite3.Connection:
                 f"but this build uses {EMBEDDING_MODEL_NAME!r}. Delete the index file "
                 f"or set LOCAL_NOTES_SEARCH_DB to a fresh path, then re-index."
             )
+        _ensure_fts(conn)
     except BaseException:
         conn.close()
         raise
@@ -504,8 +594,11 @@ def _restrict_permissions(db_path: Path) -> None:
 
 def _delete_file_rows(conn: sqlite3.Connection, file_path: str) -> None:
     ids = [row[0] for row in conn.execute("SELECT id FROM chunks WHERE file_path = ?", (file_path,)).fetchall()]
+    fts = has_fts(conn)
     for chunk_id in ids:
         conn.execute("DELETE FROM chunk_vectors WHERE rowid = ?", (chunk_id,))
+        if fts:
+            conn.execute(f"DELETE FROM {_FTS_TABLE} WHERE rowid = ?", (chunk_id,))
     conn.execute("DELETE FROM chunks WHERE file_path = ?", (file_path,))
     conn.execute("DELETE FROM files WHERE path = ?", (file_path,))
 
@@ -552,6 +645,7 @@ def index_file(conn: sqlite3.Connection, path: Path) -> int:
         return 0
 
     vectors = embed_texts([c.text for c in chunks])
+    fts = has_fts(conn)
     for chunk, vector in zip(chunks, vectors):
         cursor = conn.execute(
             "INSERT INTO chunks (file_path, start_line, end_line, text) VALUES (?, ?, ?, ?)",
@@ -561,6 +655,10 @@ def index_file(conn: sqlite3.Connection, path: Path) -> int:
             "INSERT INTO chunk_vectors (rowid, embedding) VALUES (?, ?)",
             (cursor.lastrowid, sqlite_vec.serialize_float32(vector)),
         )
+        if fts:
+            conn.execute(
+                f"INSERT INTO {_FTS_TABLE} (rowid, text) VALUES (?, ?)", (cursor.lastrowid, _fold(chunk.text))
+            )
 
     conn.execute(
         "INSERT INTO files (path, content_hash, chunk_count, indexed_at, embedder) VALUES (?, ?, ?, ?, ?) "
@@ -570,6 +668,73 @@ def index_file(conn: sqlite3.Connection, path: Path) -> int:
     )
     conn.commit()
     return len(chunks)
+
+
+# --- MCP tool annotations and structured results --------------------------
+# Behaviour hints (MCP 2025-03-26+). Clients may use them to decide what needs
+# a confirmation prompt, so they say what each tool really does to the user's
+# environment. None of these tools touches the user's files: the only state
+# any of them changes is the index database.
+#   index_directory  writes the index; re-running it on unchanged files is a
+#                    no-op, so it is idempotent. Closed world: the one possible
+#                    network call is the one-time model download.
+#   search/list      read the index only.
+#   ask_notes        reads the index, then (with GROQ_API_KEY/MISTRAL_API_KEY)
+#                    sends the retrieved chunks to an LLM provider: open world.
+#   remove_directory deletes index entries - destructive for the index, though
+#                    never for the files themselves; repeating it changes nothing.
+INDEX_ANNOTATIONS = ToolAnnotations(
+    read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False
+)
+SEARCH_ANNOTATIONS = ToolAnnotations(read_only_hint=True, idempotent_hint=True, open_world_hint=False)
+LIST_ANNOTATIONS = ToolAnnotations(read_only_hint=True, idempotent_hint=True, open_world_hint=False)
+ASK_ANNOTATIONS = ToolAnnotations(read_only_hint=True, idempotent_hint=False, open_world_hint=True)
+REMOVE_ANNOTATIONS = ToolAnnotations(
+    read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=False
+)
+
+
+class SearchHit(BaseModel):
+    """One retrieved chunk, as `search_notes` returns it in structuredContent."""
+
+    path: str
+    start_line: int
+    end_line: int
+    snippet: str = Field(description="the chunk text, cut at 400 characters like the text output")
+    distance: float | None = Field(description="vector distance; null for a keyword-only match")
+    match: Literal["vector", "keyword", "both"]
+
+
+class SearchResults(BaseModel):
+    query: str
+    mode: Literal["hybrid", "vector", "keyword"]
+    count: int
+    results: list[SearchHit]
+    notice: str = Field(default="", description="stale-embedder or fallback notice, empty if none")
+
+
+class IndexedFile(BaseModel):
+    path: str
+    chunk_count: int
+    indexed_at: str
+    embedder: str | None
+    needs_reindex: bool = Field(description="embedded by a different model/fastembed version")
+
+
+class IndexedFiles(BaseModel):
+    count: int = Field(description="files in the index under path_prefix")
+    shown: int = Field(description=f"files listed below (at most {MAX_LISTED_FILES})")
+    files: list[IndexedFile]
+
+
+def _text_result(text: str, structured: BaseModel | None = None, *, is_error: bool = False) -> CallToolResult:
+    """One result, two views: the exact text this tool always returned, and
+    (unless it is an error) the same facts as structuredContent."""
+    return CallToolResult(
+        content=[TextContent(type="text", text=text)],
+        structured_content=structured.model_dump(mode="json") if structured is not None else None,
+        is_error=is_error,
+    )
 
 
 # --- MCP tools -----------------------------------------------------------
@@ -639,7 +804,7 @@ def _index_directory_sync(path: str, extensions: list[str] | None) -> str:
         conn.close()
 
 
-@mcp.tool()
+@mcp.tool(title="Index a directory", annotations=INDEX_ANNOTATIONS)
 async def index_directory(path: str, extensions: list[str] | None = None) -> str:
     """Index (or re-index) a local directory for semantic search. Walks
     recursively, skips .git/node_modules/.venv/etc and files >2MB, and
@@ -684,47 +849,119 @@ def _stale_embedder_notice(conn: sqlite3.Connection) -> str:
     )
 
 
-def _retrieve(query: str, top_k: int, path_prefix: str | None) -> tuple[list[tuple], str] | str:
-    """Returns ((file_path, start_line, end_line, text, distance) rows,
-    stale-embedder notice or ""), or a str error message if the query/top_k
-    is invalid."""
+def _vector_hits(conn: sqlite3.Connection, query: str, fetch: int) -> list[tuple]:
+    """(chunk_id, file_path, start_line, end_line, text, distance), nearest first."""
     import sqlite_vec
 
+    [query_vector] = embed_texts([query])
+    return conn.execute(
+        """
+        SELECT chunks.id, chunks.file_path, chunks.start_line, chunks.end_line, chunks.text, chunk_vectors.distance
+        FROM chunk_vectors
+        JOIN chunks ON chunks.id = chunk_vectors.rowid
+        WHERE chunk_vectors.embedding MATCH ? AND k = ?
+        ORDER BY chunk_vectors.distance
+        """,
+        (sqlite_vec.serialize_float32(query_vector), fetch),
+    ).fetchall()
+
+
+def _keyword_hits(conn: sqlite3.Connection, query: str, fetch: int) -> list[tuple]:
+    """(chunk_id, file_path, start_line, end_line, text, bm25), best first.
+    No model involved: this works offline even before the model is cached."""
+    expression = fts_query(query)
+    if expression is None:
+        return []
+    return conn.execute(
+        f"""
+        SELECT chunks.id, chunks.file_path, chunks.start_line, chunks.end_line, chunks.text, bm25({_FTS_TABLE})
+        FROM {_FTS_TABLE}
+        JOIN chunks ON chunks.id = {_FTS_TABLE}.rowid
+        WHERE {_FTS_TABLE} MATCH ?
+        ORDER BY bm25({_FTS_TABLE}), chunks.id
+        LIMIT ?
+        """,
+        (expression, fetch),
+    ).fetchall()
+
+
+def _retrieve(
+    query: str, top_k: int, path_prefix: str | None, mode: str = "hybrid"
+) -> tuple[list[tuple], str] | str:
+    """Returns ((file_path, start_line, end_line, text, distance, match)
+    rows, notice or ""), or a str error message if the arguments are invalid.
+
+    `distance` is the vector distance, or None for a chunk only the keyword
+    index found. `match` says which index found it: "vector", "keyword" or
+    "both". mode="vector" is the original behaviour, unchanged; "keyword"
+    needs no embedding model; "hybrid" (the default) fuses both rankings with
+    reciprocal rank fusion."""
     if not query.strip():
         return "Hata: boş sorgu."
     if top_k <= 0:
         return "Hata: top_k pozitif bir sayı olmalı."
     if top_k > MAX_TOP_K:
         return f"Hata: top_k en fazla {MAX_TOP_K} olabilir (istenen: {top_k})."
+    if mode not in SEARCH_MODES:
+        return f"Hata: mode {', '.join(SEARCH_MODES)} değerlerinden biri olmalı (verilen: {mode!r})."
 
+    fetch = max(top_k * 4, top_k)  # over-fetch, then filter by prefix below
+    notice = ""
     conn = get_connection()
     try:
-        [query_vector] = embed_texts([query])
-        rows = conn.execute(
-            """
-            SELECT chunks.file_path, chunks.start_line, chunks.end_line, chunks.text, chunk_vectors.distance
-            FROM chunk_vectors
-            JOIN chunks ON chunks.id = chunk_vectors.rowid
-            WHERE chunk_vectors.embedding MATCH ? AND k = ?
-            ORDER BY chunk_vectors.distance
-            """,
-            (sqlite_vec.serialize_float32(query_vector), max(top_k * 4, top_k)),  # over-fetch, then filter by prefix below
-        ).fetchall()
-        notice = _stale_embedder_notice(conn)
+        fts = has_fts(conn)
+        if mode == "keyword" and not fts:
+            return "Hata: bu SQLite derlemesinde FTS5 yok; mode='keyword' kullanılamaz (mode='vector' deneyin)."
+        if mode == "hybrid" and not fts:
+            mode = "vector"
+            notice = "Not: SQLite FTS5 yok; yalnızca vektör araması yapıldı.\n\n"
+        vector = _vector_hits(conn, query, fetch) if mode in ("vector", "hybrid") else []
+        keyword = _keyword_hits(conn, query, fetch) if mode in ("keyword", "hybrid") else []
+        if mode != "keyword":
+            notice = _stale_embedder_notice(conn) + notice
     finally:
         conn.close()
 
     if path_prefix:
         prefix = str(Path(path_prefix).expanduser().resolve())
-        rows = [r for r in rows if is_under(r[0], prefix)]
-    return rows[:top_k], notice
+        vector = [r for r in vector if is_under(r[1], prefix)]
+        keyword = [r for r in keyword if is_under(r[1], prefix)]
+
+    by_id = {r[0]: r for r in keyword}
+    by_id.update({r[0]: r for r in vector})
+    distances = {r[0]: r[5] for r in vector}
+    keyword_ids = {r[0] for r in keyword}
+
+    if mode == "vector":
+        order = [r[0] for r in vector]
+    elif mode == "keyword":
+        order = [r[0] for r in keyword]
+    else:
+        order = [cid for cid, _ in _rrf_fuse([r[0] for r in vector], [r[0] for r in keyword])]
+
+    rows = []
+    for cid in order[:top_k]:
+        _, file_path, start_line, end_line, text, _ = by_id[cid]
+        in_vector, in_keyword = cid in distances, cid in keyword_ids
+        match = "both" if in_vector and in_keyword else ("vector" if in_vector else "keyword")
+        rows.append((file_path, start_line, end_line, text, distances.get(cid), match))
+    return rows, notice
+
+
+def _describe_match(distance: float | None, match: str) -> str:
+    if distance is None:
+        return "anahtar kelime eşleşmesi"
+    if match == "both":
+        return f"distance={distance:.4f}, anahtar kelime de eşleşti"
+    return f"distance={distance:.4f}"
 
 
 def _format_results(rows: list[tuple]) -> str:
     lines = [f"{len(rows)} sonuç:"]
-    for file_path, start_line, end_line, text, distance in rows:
-        snippet = text if len(text) <= 400 else text[:400] + "…"
-        lines.append(f"\n--- {file_path}:{start_line}-{end_line} (distance={distance:.4f}) ---\n{snippet}")
+    for file_path, start_line, end_line, text, distance, match in rows:
+        lines.append(
+            f"\n--- {file_path}:{start_line}-{end_line} ({_describe_match(distance, match)}) ---\n{_snippet(text)}"
+        )
     return "\n".join(lines)
 
 
@@ -735,22 +972,67 @@ TopK = Annotated[int, Field(ge=1, le=MAX_TOP_K)]
 NO_RESULTS_MESSAGE = "Sonuç bulunamadı. Önce index_directory ile bir dizin indexlenmiş mi kontrol edin."
 
 
-def _search_notes_sync(query: str, top_k: int, path_prefix: str | None) -> str:
-    retrieved = _retrieve(query, top_k, path_prefix)
+SearchMode = Literal["hybrid", "vector", "keyword"]
+
+
+def _snippet(text: str) -> str:
+    return text if len(text) <= 400 else text[:400] + "…"
+
+
+def _search_result(query: str, top_k: int, path_prefix: str | None, mode: str = "hybrid") -> CallToolResult:
+    retrieved = _retrieve(query, top_k, path_prefix, mode)
     if isinstance(retrieved, str):
-        return retrieved
+        return _text_result(retrieved, is_error=True)
     rows, notice = retrieved
-    if not rows:
-        return notice + NO_RESULTS_MESSAGE
-    return notice + _format_results(rows)
+    text = notice + (_format_results(rows) if rows else NO_RESULTS_MESSAGE)
+    structured = SearchResults(
+        query=query,
+        mode=mode if mode in SEARCH_MODES else "hybrid",
+        count=len(rows),
+        results=[
+            SearchHit(path=fp, start_line=sl, end_line=el, snippet=_snippet(chunk), distance=dist, match=match)
+            for fp, sl, el, chunk, dist, match in rows
+        ],
+        notice=notice.strip(),
+    )
+    return _text_result(text, structured)
 
 
-@mcp.tool()
-async def search_notes(query: str, top_k: TopK = 5, path_prefix: str | None = None) -> str:
-    """Semantic search across everything indexed so far. Returns the top
-    matching chunks with file path, line range, and a relevance-ordered
-    snippet - not just a bag of file names. top_k is 1-50."""
-    return await asyncio.to_thread(_search_notes_sync, query, top_k, path_prefix)
+def _search_notes_sync(query: str, top_k: int, path_prefix: str | None, mode: str = "hybrid") -> str:
+    return _search_result(query, top_k, path_prefix, mode).content[0].text
+
+
+SEARCH_NOTES_DESCRIPTION = """Search across everything indexed so far. Returns the top matching
+chunks with file path, line range, and a relevance-ordered snippet - not
+just a bag of file names. top_k is 1-50.
+
+mode: "hybrid" (default) fuses semantic (vector) and keyword (BM25)
+rankings, so both "how do I cook pasta" and an exact error code or
+identifier are found; "vector" is meaning only; "keyword" is exact words
+only and needs no embedding model.
+
+The same results also come back as structuredContent (path, start_line,
+end_line, snippet, distance, match per hit), so a client can cite file:line
+without parsing the text."""
+
+
+async def search_notes(
+    query: str, top_k: TopK = 5, path_prefix: str | None = None, mode: SearchMode = "hybrid"
+) -> str:
+    """The text of the `search_notes` tool's result. Kept as a plain function
+    for in-process callers and tests; the MCP tool (`search_notes_tool`) adds
+    the structured view of the same retrieval."""
+    return await asyncio.to_thread(_search_notes_sync, query, top_k, path_prefix, mode)
+
+
+@mcp.tool(
+    name="search_notes", title="Search your notes", description=SEARCH_NOTES_DESCRIPTION,
+    annotations=SEARCH_ANNOTATIONS,
+)
+async def search_notes_tool(
+    query: str, top_k: TopK = 5, path_prefix: str | None = None, mode: SearchMode = "hybrid"
+) -> Annotated[CallToolResult, SearchResults]:
+    return await asyncio.to_thread(_search_result, query, top_k, path_prefix, mode)
 
 
 # --- ask_notes: retrieve + LLM synthesis --------------------------------
@@ -809,7 +1091,7 @@ async def _synthesize_answer(question: str, rows: list[tuple]) -> str | None:
     if not chain:
         return None
 
-    context = "\n\n".join(f"[{fp}:{sl}-{el}]\n{text}" for fp, sl, el, text, _ in rows)
+    context = "\n\n".join(f"[{fp}:{sl}-{el}]\n{text}" for fp, sl, el, text, *_ in rows)
     messages = [
         {"role": "system", "content": ASK_NOTES_SYSTEM_PROMPT},
         {"role": "user", "content": f"Bağlam:\n{context}\n\nSoru: {question}"},
@@ -834,8 +1116,8 @@ async def _synthesize_answer(question: str, rows: list[tuple]) -> str | None:
     return content or None
 
 
-async def _ask_notes_async(question: str, top_k: int, path_prefix: str | None) -> str:
-    retrieved = await asyncio.to_thread(_retrieve, question, top_k, path_prefix)
+async def _ask_notes_async(question: str, top_k: int, path_prefix: str | None, mode: str = "hybrid") -> str:
+    retrieved = await asyncio.to_thread(_retrieve, question, top_k, path_prefix, mode)
     if isinstance(retrieved, str):
         return retrieved
     rows, notice = retrieved
@@ -855,23 +1137,26 @@ async def _ask_notes_async(question: str, top_k: int, path_prefix: str | None) -
             "ham eşleşen parçalar:\n\n" + _format_results(rows)
         )
 
-    sources = "\n".join(f"  - {fp}:{sl}-{el}" for fp, sl, el, _, _ in rows)
+    sources = "\n".join(f"  - {fp}:{sl}-{el}" for fp, sl, el, *_ in rows)
     return f"{notice}{answer}\n\nKaynaklar:\n{sources}"
 
 
-@mcp.tool()
-async def ask_notes(question: str, top_k: TopK = 5, path_prefix: str | None = None) -> str:
+@mcp.tool(title="Ask about your notes", annotations=ASK_ANNOTATIONS)
+async def ask_notes(
+    question: str, top_k: TopK = 5, path_prefix: str | None = None, mode: SearchMode = "hybrid"
+) -> str:
     """Ask a question in natural language about your indexed files. Retrieves
     the most relevant chunks (same retrieval as search_notes) and asks an LLM
     (Groq, then Mistral fallback - needs GROQ_API_KEY or MISTRAL_API_KEY) to
     synthesize an answer grounded ONLY in those chunks, with file:line
     sources. Without either key configured, degrades to returning the raw
     retrieved chunks with a note that no LLM is available - never fails
-    outright just because synthesis isn't possible."""
-    return await _ask_notes_async(question, top_k, path_prefix)
+    outright just because synthesis isn't possible. mode is the same as
+    search_notes' (hybrid by default)."""
+    return await _ask_notes_async(question, top_k, path_prefix, mode)
 
 
-def _list_indexed_files_sync(path_prefix: str | None) -> str:
+def _list_result(path_prefix: str | None) -> CallToolResult:
     conn = get_connection()
     try:
         rows = conn.execute("SELECT path, chunk_count, indexed_at, embedder FROM files ORDER BY path").fetchall()
@@ -883,26 +1168,46 @@ def _list_indexed_files_sync(path_prefix: str | None) -> str:
         rows = [r for r in rows if is_under(r[0], prefix)]
 
     if not rows:
-        return "Index boş."
+        return _text_result("Index boş.", IndexedFiles(count=0, shown=0, files=[]))
     lines = [f"{len(rows)} dosya indexlenmiş:"]
     current = embedder_id()
+    files = []
     for path, chunk_count, indexed_at, embedder in rows[:MAX_LISTED_FILES]:
-        stale = f" [yeniden indexlenmeli: {embedder or 'gömme sürümü kayıtsız'}]" if chunk_count and embedder != current else ""
+        needs_reindex = bool(chunk_count and embedder != current)
+        stale = f" [yeniden indexlenmeli: {embedder or 'gömme sürümü kayıtsız'}]" if needs_reindex else ""
         lines.append(f"  {path} - {chunk_count} chunk, {indexed_at}{stale}")
+        files.append(IndexedFile(path=path, chunk_count=chunk_count, indexed_at=indexed_at,
+                                 embedder=embedder, needs_reindex=needs_reindex))
     if len(rows) > MAX_LISTED_FILES:
         lines.append(
             f"  ... ve {len(rows) - MAX_LISTED_FILES} dosya daha (ilk {MAX_LISTED_FILES} gösterildi; "
             "daraltmak için path_prefix kullanın)"
         )
-    return "\n".join(lines)
+    return _text_result("\n".join(lines), IndexedFiles(count=len(rows), shown=len(files), files=files))
 
 
-@mcp.tool()
+def _list_indexed_files_sync(path_prefix: str | None) -> str:
+    return _list_result(path_prefix).content[0].text
+
+
+LIST_INDEXED_FILES_DESCRIPTION = """Lists what's currently in the index - file path, chunk count, last
+indexed time. Useful to check what's covered before searching, or to
+debug a stale/missing result. Also returned as structuredContent
+(count, shown, and per file: path, chunk_count, indexed_at, embedder,
+needs_reindex)."""
+
+
 async def list_indexed_files(path_prefix: str | None = None) -> str:
-    """Lists what's currently in the index - file path, chunk count, last
-    indexed time. Useful to check what's covered before searching, or to
-    debug a stale/missing result."""
+    """The text of the `list_indexed_files` tool's result (see search_notes)."""
     return await asyncio.to_thread(_list_indexed_files_sync, path_prefix)
+
+
+@mcp.tool(
+    name="list_indexed_files", title="List indexed files", description=LIST_INDEXED_FILES_DESCRIPTION,
+    annotations=LIST_ANNOTATIONS,
+)
+async def list_indexed_files_tool(path_prefix: str | None = None) -> Annotated[CallToolResult, IndexedFiles]:
+    return await asyncio.to_thread(_list_result, path_prefix)
 
 
 def _remove_directory_sync(path: str) -> str:
@@ -919,7 +1224,7 @@ def _remove_directory_sync(path: str) -> str:
     return f"{len(rows)} dosya index'ten kaldırıldı ({prefix} altında)."
 
 
-@mcp.tool()
+@mcp.tool(title="Remove a directory from the index", annotations=REMOVE_ANNOTATIONS)
 async def remove_directory(path: str) -> str:
     """Removes every indexed file/chunk under `path` from the index. The
     index is persistent local state in ~/.local-notes-search/ (or

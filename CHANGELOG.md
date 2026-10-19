@@ -6,6 +6,32 @@ workflow (`.github/workflows/yayinla.yml`) refuses a tag that does not match it.
 
 ## [Unreleased]
 
+### MCP surface: annotations and structured output
+
+- Every tool has a `title` and `ToolAnnotations` (read-only / destructive /
+  idempotent / open-world) matching what it does: only `remove_directory` is
+  destructive (to the index, never to files), only `ask_notes` is open-world.
+- `search_notes` and `list_indexed_files` publish an `outputSchema` and return
+  `structuredContent` next to the unchanged text; invalid input is an
+  `isError` result. In-process callers keep `search_notes()` /
+  `list_indexed_files()` returning the text. 13 tests in
+  `tests/test_mcp_surface.py`, through `mcp.list_tools()` / `mcp.call_tool()`.
+
+### Hybrid retrieval
+
+- `search_notes` and `ask_notes` take `mode="hybrid"` (default), `"vector"` or
+  `"keyword"`. Every chunk is also written to an SQLite FTS5 table (BM25,
+  `unicode61 remove_diacritics 2`) in the same `index.db`; hybrid fuses the
+  vector and keyword rankings with reciprocal rank fusion (k=60). `"vector"`
+  is the previous ranking unchanged; `"keyword"` never loads the model. Query
+  words are quoted, so FTS syntax in a query is inert. Indexes from earlier
+  releases are backfilled from their stored chunks on first open (no
+  re-embedding); an SQLite without FTS5 falls back to vectors and says so.
+  Results found only by the keyword index print `anahtar kelime eşleşmesi`
+  instead of a distance. The Turkish `ı`/`İ` (which `remove_diacritics`
+  does not fold) are mapped to `i` on both sides, so `calisma` finds
+  `Çalışma`. 23 tests in `tests/test_hybrid_search.py`.
+
 ### First-run experience
 
 - `examples/stdio_demo.py` plus fixture notes in `examples/notes/`: one command
